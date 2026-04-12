@@ -1,7 +1,6 @@
 import axios from 'axios';
 
-// API Base URL - can be configured via environment or settings
-const API_BASE_URL = localStorage.getItem('api_base_url') || 'http://localhost:3000';
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
 
 const api = axios.create({
     baseURL: API_BASE_URL,
@@ -119,15 +118,5 @@ api.interceptors.response.use(
         return Promise.reject(error);
     }
 );
-
-// Update API base URL
-export const setApiBaseUrl = (url) => {
-    localStorage.setItem('api_base_url', url);
-    api.defaults.baseURL = url;
-};
-
-export const getApiBaseUrl = () => {
-    return api.defaults.baseURL;
-};
 
 export default api;

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useBusiness } from '../context/BusinessContext';
-import api from '../services/api';
+import { getExpenses, createExpense, updateExpense, deleteExpense, approveExpense, rejectExpense } from '../services/api/expenses';
 import {
     FiPlus,
     FiSearch,
@@ -58,7 +58,7 @@ const Expenses = () => {
         setError(null);
         try {
             const params = statusFilter !== 'all' ? { status: statusFilter } : {};
-            const res = await api.get('/expense', { params });
+            const res = await getExpenses(params);
             const data = res.data;
             if (Array.isArray(data)) {
                 setExpenses(data);
@@ -118,9 +118,9 @@ const Expenses = () => {
             };
 
             if (editingExpense) {
-                await api.patch(`/expense/${editingExpense._id}`, data);
+                await updateExpense(editingExpense._id, data);
             } else {
-                await api.post('/expense', data);
+                await createExpense(data);
             }
 
             setShowModal(false);
@@ -133,7 +133,7 @@ const Expenses = () => {
 
     const handleApprove = async (expenseId) => {
         try {
-            await api.post(`/expense/${expenseId}/approve`);
+            await approveExpense(expenseId);
             fetchExpenses();
         } catch (error) {
             console.error('Error approving expense:', error);
@@ -146,7 +146,7 @@ const Expenses = () => {
         if (!reason) return;
 
         try {
-            await api.post(`/expense/${expenseId}/reject`, { reason });
+            await rejectExpense(expenseId, reason);
             fetchExpenses();
         } catch (error) {
             console.error('Error rejecting expense:', error);
@@ -158,7 +158,7 @@ const Expenses = () => {
         if (!window.confirm('Are you sure you want to delete this expense?')) return;
 
         try {
-            await api.delete(`/expense/${expenseId}`);
+            await deleteExpense(expenseId);
             fetchExpenses();
         } catch (error) {
             console.error('Error deleting expense:', error);

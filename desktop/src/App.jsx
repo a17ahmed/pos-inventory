@@ -44,6 +44,7 @@ class ErrorBoundary extends Component {
 
 // Screens
 import Login from './screens/Login';
+import Signup from './screens/Signup';
 import Dashboard from './screens/Dashboard';
 import Sales from './screens/Sales';
 import Products from './screens/Products';
@@ -56,6 +57,8 @@ import Pending from './screens/Pending';
 import Profile from './screens/Profile';
 import Returns from './screens/Returns';
 import Vendors from './screens/Vendors';
+import Customers from './screens/Customers';
+import CustomerLedger from './screens/CustomerLedger';
 
 // Layout
 import Layout from './components/Layout';
@@ -115,6 +118,14 @@ function AppContent() {
                 element={
                     <PublicRoute>
                         <Login />
+                    </PublicRoute>
+                }
+            />
+            <Route
+                path="/signup"
+                element={
+                    <PublicRoute>
+                        <Signup />
                     </PublicRoute>
                 }
             />
@@ -244,6 +255,26 @@ function AppContent() {
                     <ProtectedRoute>
                         <Layout>
                             <Vendors />
+                        </Layout>
+                    </ProtectedRoute>
+                }
+            />
+            <Route
+                path="/customers"
+                element={
+                    <ProtectedRoute>
+                        <Layout>
+                            <Customers />
+                        </Layout>
+                    </ProtectedRoute>
+                }
+            />
+            <Route
+                path="/customers/:id/ledger"
+                element={
+                    <ProtectedRoute>
+                        <Layout>
+                            <CustomerLedger />
                         </Layout>
                     </ProtectedRoute>
                 }

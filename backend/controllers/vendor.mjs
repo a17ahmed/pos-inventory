@@ -5,7 +5,7 @@ import mongoose from 'mongoose';
 // Create vendor
 const createVendor = async (req, res) => {
     try {
-        const { name, phone, company, notes } = req.body;
+        const { name, phone, company, address, bankAccount, creditDays, creditLimit, notes } = req.body;
 
         if (!name || !name.trim()) {
             return res.status(400).json({ message: 'Vendor name is required' });
@@ -15,6 +15,10 @@ const createVendor = async (req, res) => {
             name: name.trim(),
             phone: phone || '',
             company: company || '',
+            address: address || '',
+            bankAccount: bankAccount || {},
+            creditDays: creditDays || 0,
+            creditLimit: creditLimit || 0,
             notes: notes || '',
             business: req.user.businessId
         });
@@ -137,7 +141,7 @@ const getVendor = async (req, res) => {
 // Update vendor
 const updateVendor = async (req, res) => {
     try {
-        const allowedFields = ['name', 'phone', 'company', 'notes', 'isActive'];
+        const allowedFields = ['name', 'phone', 'company', 'address', 'bankAccount', 'notes', 'isActive', 'creditDays', 'creditLimit'];
         const updates = {};
         for (const field of allowedFields) {
             if (req.body[field] !== undefined) {
@@ -186,7 +190,7 @@ const deleteVendor = async (req, res) => {
                 $match: {
                     vendor: new mongoose.Types.ObjectId(vendor._id),
                     business: new mongoose.Types.ObjectId(req.user.businessId),
-                    paymentStatus: { $ne: 'paid' }
+                    paymentStatus: { $nin: ['paid', 'returned'] }
                 }
             },
             {
@@ -212,4 +216,245 @@ const deleteVendor = async (req, res) => {
     }
 };
 
-export { createVendor, getAllVendors, getVendor, updateVendor, deleteVendor };
+// Vendor ledger - chronological timeline of supplies + payments with running balance
+const getVendorLedger = async (req, res) => {
+    try {
+        const vendor = await Vendor.findOne({
+            _id: req.params.id,
+            business: req.user.businessId
+        }).lean();
+
+        if (!vendor) {
+            return res.status(404).json({ message: 'Vendor not found' });
+        }
+
+        const { startDate, endDate } = req.query;
+
+        const supplyFilter = {
+            vendor: new mongoose.Types.ObjectId(vendor._id),
+            business: new mongoose.Types.ObjectId(req.user.businessId)
+        };
+
+        if (startDate || endDate) {
+            supplyFilter.billDate = {};
+            if (startDate) supplyFilter.billDate.$gte = new Date(startDate);
+            if (endDate) supplyFilter.billDate.$lte = new Date(endDate);
+        }
+
+        const supplies = await Supply.find(supplyFilter)
+            .sort({ billDate: 1, createdAt: 1 })
+            .lean();
+
+        // Build ledger entries: one for each supply + one for each payment
+        const ledger = [];
+
+        for (const supply of supplies) {
+            // Supply entry (debit - vendor gave us goods, we owe them)
+            ledger.push({
+                type: 'supply',
+                date: supply.billDate,
+                description: `Supply #${supply.supplyNumber}${supply.billNumber ? ` (Bill: ${supply.billNumber})` : ''}`,
+                supplyId: supply._id,
+                supplyNumber: supply.supplyNumber,
+                items: supply.items,
+                debit: supply.totalAmount,
+                credit: 0,
+                notes: supply.notes
+            });
+
+            // Payment entries (credit - we paid the vendor)
+            if (supply.payments && supply.payments.length > 0) {
+                for (const payment of supply.payments) {
+                    ledger.push({
+                        type: 'payment',
+                        date: payment.paidAt,
+                        description: `Payment for Supply #${supply.supplyNumber}`,
+                        supplyId: supply._id,
+                        supplyNumber: supply.supplyNumber,
+                        debit: 0,
+                        credit: payment.amount,
+                        method: payment.method,
+                        paidBy: payment.paidBy,
+                        reference: payment.reference,
+                        notes: payment.note
+                    });
+                }
+            }
+
+            // Return entries (credit - vendor owes us back / reduces what we owe)
+            if (supply.returns && supply.returns.length > 0) {
+                for (const ret of supply.returns) {
+                    ledger.push({
+                        type: 'return',
+                        date: ret.returnedAt,
+                        description: `Return on Supply #${supply.supplyNumber} (${ret.items.length} item${ret.items.length > 1 ? 's' : ''})`,
+                        supplyId: supply._id,
+                        supplyNumber: supply.supplyNumber,
+                        returnItems: ret.items,
+                        debit: 0,
+                        credit: ret.totalRefund,
+                        returnedBy: ret.returnedBy,
+                        notes: ret.note
+                    });
+                }
+            }
+        }
+
+        // Sort by date
+        ledger.sort((a, b) => new Date(a.date) - new Date(b.date));
+
+        // Calculate running balance
+        let runningBalance = 0;
+        for (const entry of ledger) {
+            runningBalance += entry.debit - entry.credit;
+            entry.balance = runningBalance;
+        }
+
+        // Summary
+        const totalDebit = ledger.reduce((sum, e) => sum + e.debit, 0);
+        const totalPaid = ledger.filter(e => e.type === 'payment').reduce((sum, e) => sum + e.credit, 0);
+        const totalReturns = ledger.filter(e => e.type === 'return').reduce((sum, e) => sum + e.credit, 0);
+        const totalCredit = totalPaid + totalReturns;
+
+        res.json({
+            vendor: {
+                _id: vendor._id,
+                name: vendor.name,
+                phone: vendor.phone,
+                company: vendor.company
+            },
+            ledger,
+            summary: {
+                totalSupplies: totalDebit,
+                totalPaid,
+                totalReturns,
+                currentBalance: totalDebit - totalCredit,
+                totalEntries: ledger.length,
+                supplyCount: supplies.length
+            }
+        });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+// FIFO vendor payment - distribute lump sum across pending supplies (oldest first)
+const payVendor = async (req, res) => {
+    try {
+        const { amount, method, note, reference } = req.body;
+        const payAmount = Number(amount);
+
+        if (!payAmount || payAmount <= 0) {
+            return res.status(400).json({ message: 'Valid payment amount is required' });
+        }
+
+        const vendor = await Vendor.findOne({
+            _id: req.params.id,
+            business: req.user.businessId,
+            isActive: true
+        }).lean();
+
+        if (!vendor) {
+            return res.status(404).json({ message: 'Vendor not found' });
+        }
+
+        // Fetch pending supplies — oldest first (FIFO)
+        const pendingSupplies = await Supply.find({
+            vendor: vendor._id,
+            business: req.user.businessId,
+            paymentStatus: { $in: ['unpaid', 'partial'] }
+        }).sort({ billDate: 1, createdAt: 1 });
+
+        if (pendingSupplies.length === 0) {
+            return res.status(400).json({ message: 'No pending supplies for this vendor' });
+        }
+
+        const totalOutstanding = pendingSupplies.reduce((sum, s) => sum + s.remainingAmount, 0);
+
+        if (payAmount > totalOutstanding) {
+            return res.status(400).json({
+                message: `Payment amount (Rs ${payAmount}) exceeds total outstanding (Rs ${totalOutstanding})`
+            });
+        }
+
+        const paidBy = req.user.adminId ? 'Admin' : req.user.name || '';
+        const paymentMethod = method || 'cash';
+        const paymentNote = note ? `FIFO vendor payment - ${note}` : 'FIFO vendor payment';
+
+        // Distribute payment across supplies in a transaction
+        const session = await mongoose.startSession();
+        const allocations = [];
+        let remainingToAllocate = payAmount;
+
+        try {
+            session.startTransaction();
+
+            for (const supply of pendingSupplies) {
+                if (remainingToAllocate <= 0) break;
+
+                const allocate = Math.min(supply.remainingAmount, remainingToAllocate);
+                const previouslyPaid = supply.paidAmount;
+
+                supply.payments.push({
+                    amount: allocate,
+                    method: paymentMethod,
+                    paidAt: new Date(),
+                    paidBy,
+                    note: paymentNote,
+                    reference: reference || ''
+                });
+
+                await supply.save({ session }); // pre-save hook recalculates everything
+
+                allocations.push({
+                    supplyId: supply._id,
+                    supplyNumber: supply.supplyNumber,
+                    billNumber: supply.billNumber,
+                    billDate: supply.billDate,
+                    supplyTotal: supply.totalAmount,
+                    allocated: allocate,
+                    previouslyPaid,
+                    newPaidAmount: supply.paidAmount,
+                    newRemainingAmount: supply.remainingAmount,
+                    newStatus: supply.paymentStatus
+                });
+
+                remainingToAllocate -= allocate;
+            }
+
+            await session.commitTransaction();
+        } catch (txError) {
+            await session.abortTransaction();
+            throw txError;
+        } finally {
+            session.endSession();
+        }
+
+        const fullyPaid = allocations.filter(a => a.newStatus === 'paid').length;
+        const partiallyPaid = allocations.filter(a => a.newStatus === 'partial').length;
+
+        res.json({
+            message: `Payment of Rs ${payAmount} distributed across ${allocations.length} supplies`,
+            vendor: { _id: vendor._id, name: vendor.name },
+            payment: {
+                totalAmount: payAmount,
+                method: paymentMethod,
+                reference: reference || '',
+                paidAt: new Date(),
+                paidBy
+            },
+            allocations,
+            summary: {
+                suppliesAffected: allocations.length,
+                suppliesFullyPaid: fullyPaid,
+                suppliesPartiallyPaid: partiallyPaid,
+                outstandingBefore: totalOutstanding,
+                outstandingAfter: totalOutstanding - payAmount
+            }
+        });
+    } catch (error) {
+        res.status(500).json({ message: error.message });
+    }
+};
+
+export { createVendor, getAllVendors, getVendor, updateVendor, deleteVendor, getVendorLedger, payVendor };

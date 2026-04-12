@@ -2,6 +2,9 @@ import mongoose from "mongoose";
 import Bill from "../models/bill.mjs";
 import Counter from "../models/counter.mjs";
 import Product from "../models/product.mjs";
+import Customer from "../models/customer.mjs";
+import Expense from "../models/expense.mjs";
+import StockMovement from "../models/stockMovement.mjs";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -44,51 +47,109 @@ const enrichItemsWithCost = async (items, businessId) => {
  * Bulk-deduct stock for sold items (only products with trackStock:true).
  * Best-effort: logs errors but does not throw.
  */
-const deductStock = async (items, businessId) => {
-    const ops = items
-        .filter((i) => i.product && mongoose.Types.ObjectId.isValid(i.product))
-        .map((i) => ({
-            updateOne: {
-                filter: {
-                    _id: i.product,
-                    business: businessId,
-                    trackStock: true,
-                },
-                update: { $inc: { stockQuantity: -(i.qty || 1) } },
+const deductStock = async (items, businessId, billRef = {}, session = null) => {
+    const validItems = items.filter((i) => i.product && mongoose.Types.ObjectId.isValid(i.product));
+    const ops = validItems.map((i) => ({
+        updateOne: {
+            filter: {
+                _id: i.product,
+                business: businessId,
+                trackStock: true,
             },
-        }));
+            update: { $inc: { stockQuantity: -(i.qty || 1) } },
+        },
+    }));
 
     if (ops.length === 0) return;
 
     try {
-        await Product.bulkWrite(ops);
+        await Product.bulkWrite(ops, session ? { session } : {});
+
+        // Log stock movements (read with session so we see transaction's snapshot)
+        const query = Product.find(
+            { _id: { $in: validItems.map(i => i.product) }, business: businessId },
+            { stockQuantity: 1 }
+        );
+        if (session) query.session(session);
+        const updatedProducts = await query.lean();
+        const stockMap = new Map(updatedProducts.map(p => [p._id.toString(), p.stockQuantity]));
+
+        const movements = validItems.map(i => {
+            const qty = i.qty || 1;
+            return {
+                product: i.product,
+                productName: i.name || i.productName || '',
+                type: 'bill_sold',
+                quantity: -qty,
+                previousStock: (stockMap.get(i.product.toString()) || 0) + qty,
+                newStock: stockMap.get(i.product.toString()) || 0,
+                referenceType: 'bill',
+                referenceId: billRef.id || null,
+                referenceNumber: billRef.number ? `BILL-${billRef.number}` : '',
+                unitPrice: i.price || i.sellingPrice || 0,
+                reason: 'Item sold',
+                performedBy: billRef.performedBy || '',
+                business: businessId
+            };
+        });
+        await StockMovement.insertMany(movements, session ? { session } : {});
     } catch (err) {
-        console.error("Stock deduction failed (bill already saved):", err.message);
+        if (session) throw err; // Let transaction handle it
+        console.error("Stock deduction failed:", err.message);
     }
 };
 
 /**
  * Bulk-restore stock for returned items.
  */
-const restoreStock = async (items, businessId) => {
-    const ops = items
-        .filter((i) => i.product && mongoose.Types.ObjectId.isValid(i.product))
-        .map((i) => ({
-            updateOne: {
-                filter: {
-                    _id: i.product,
-                    business: businessId,
-                    trackStock: true,
-                },
-                update: { $inc: { stockQuantity: i.quantity || i.qty || 1 } },
+const restoreStock = async (items, businessId, billRef = {}, session = null) => {
+    const validItems = items.filter((i) => i.product && mongoose.Types.ObjectId.isValid(i.product));
+    const ops = validItems.map((i) => ({
+        updateOne: {
+            filter: {
+                _id: i.product,
+                business: businessId,
+                trackStock: true,
             },
-        }));
+            update: { $inc: { stockQuantity: i.quantity || i.qty || 1 } },
+        },
+    }));
 
     if (ops.length === 0) return;
 
     try {
-        await Product.bulkWrite(ops);
+        await Product.bulkWrite(ops, session ? { session } : {});
+
+        // Log stock movements (read with session so we see transaction's snapshot)
+        const query = Product.find(
+            { _id: { $in: validItems.map(i => i.product) }, business: businessId },
+            { stockQuantity: 1 }
+        );
+        if (session) query.session(session);
+        const updatedProducts = await query.lean();
+        const stockMap = new Map(updatedProducts.map(p => [p._id.toString(), p.stockQuantity]));
+
+        const movements = validItems.map(i => {
+            const qty = i.quantity || i.qty || 1;
+            return {
+                product: i.product,
+                productName: i.name || i.productName || '',
+                type: 'bill_return',
+                quantity: qty,
+                previousStock: (stockMap.get(i.product.toString()) || 0) - qty,
+                newStock: stockMap.get(i.product.toString()) || 0,
+                referenceType: 'bill',
+                referenceId: billRef.id || null,
+                referenceNumber: billRef.number || '',
+                unitPrice: i.price || i.unitPrice || 0,
+                reason: billRef.reason || 'Bill return',
+                performedBy: billRef.performedBy || '',
+                business: businessId
+            };
+        });
+        await StockMovement.insertMany(movements, session ? { session } : {});
     } catch (err) {
+        if (session) throw err; // Let transaction handle it
         console.error("Stock restoration failed:", err.message);
     }
 };
@@ -96,8 +157,8 @@ const restoreStock = async (items, businessId) => {
 /**
  * Generate a return number in the format RET-YYYYMMDD-####
  */
-const generateReturnNumber = async (businessId) => {
-    const seq = await Counter.getNextSequence("returnNumber", businessId);
+const generateReturnNumber = async (businessId, session = null) => {
+    const seq = await Counter.getNextSequence("returnNumber", businessId, session);
     const d = new Date();
     const ymd =
         String(d.getFullYear()) +
@@ -142,14 +203,12 @@ export const createBill = async (req, res) => {
             }
         }
 
+        const billStatus = status === "hold" ? "hold" : "completed";
+
         // ── Enrich items with costPrice ────────────────────────────
         const enrichedItems = await enrichItemsWithCost(items, req.user.businessId);
 
-        // ── Atomic bill number ─────────────────────────────────────
-        const billNumber = await Counter.getNextSequence("billNumber", req.user.businessId);
-
         const now = new Date();
-        const billStatus = status === "hold" ? "hold" : "completed";
 
         // Build payments array from the request
         const payments = [];
@@ -166,42 +225,204 @@ export const createBill = async (req, res) => {
             });
         }
 
-        const bill = new Bill({
-            billNumber,
-            business: req.user.businessId,
-            status: billStatus,
-            type: "sale",
-            items: enrichedItems,
-            payments,
-            cashGiven: req.body.cashGiven || 0,
-            idempotencyKey: idempotencyKey || undefined,
+        // ── Discount validation: only one mode allowed ─────────────
+        const hasItemDiscounts = enrichedItems.some((i) => (i.discountAmount || 0) > 0);
+        const hasBillDiscount = (parseFloat(req.body.billDiscountAmount) || 0) > 0;
 
-            // People
-            cashier: req.user.id,
-            cashierName: req.user.name || "Staff",
-            customer: req.body.customer || null,
-            customerName: req.body.customerName || "Walk-in",
-            customerPhone: req.body.customerPhone || "",
-
-            // Hold info
-            holdNote: billStatus === "hold" ? req.body.holdNote || "" : "",
-            holdAt: billStatus === "hold" ? now : null,
-
-            // Meta
-            billName: req.body.billName || "",
-            notes: req.body.notes || "",
-            date: now.toLocaleDateString(),
-            time: now.toLocaleTimeString(),
-        });
-
-        const saved = await bill.save();
-
-        // ── Stock deduction (only for completed sales) ─────────────
-        if (billStatus === "completed") {
-            await deductStock(enrichedItems, req.user.businessId);
+        if (hasItemDiscounts && hasBillDiscount) {
+            return res.status(400).json({
+                message: "Cannot apply both item-level and bill-level discounts on the same bill. Choose one.",
+            });
         }
 
-        res.status(201).json(saved);
+        // ── Build discount history entry ─────────────────────────
+        const discountHistory = [];
+        if (hasItemDiscounts) {
+            discountHistory.push({
+                appliedBy: req.user.id,
+                appliedByName: req.user.name || "Staff",
+                appliedAt: now,
+                mode: "item",
+                itemDiscounts: enrichedItems
+                    .filter((i) => (i.discountAmount || 0) > 0)
+                    .map((i) => ({
+                        name: i.name,
+                        product: i.product || null,
+                        qty: i.qty,
+                        discountAmount: i.discountAmount,
+                    })),
+                totalDiscountAmount: 0,
+            });
+        } else if (hasBillDiscount) {
+            discountHistory.push({
+                appliedBy: req.user.id,
+                appliedByName: req.user.name || "Staff",
+                appliedAt: now,
+                mode: "bill",
+                billDiscountAmount: parseFloat(req.body.billDiscountAmount),
+                reason: req.body.billDiscountReason || "",
+                totalDiscountAmount: 0,
+            });
+        }
+
+        // ── Customer validation + credit limit ─────────────────────
+        let customerDoc = null;
+        if (req.body.customer) {
+            customerDoc = await Customer.findOne({
+                _id: req.body.customer,
+                business: req.user.businessId
+            });
+
+            if (!customerDoc) {
+                return res.status(404).json({ message: "Customer not found" });
+            }
+
+            if (!customerDoc.isActive) {
+                return res.status(400).json({ message: "This customer has been deactivated" });
+            }
+
+            // Credit limit check (only for credit sales — not fully paid upfront)
+            if (customerDoc.creditLimit > 0) {
+                const totalPaying = payments.reduce((sum, p) => sum + (p.amount || 0), 0);
+
+                // Calculate post-discount bill total
+                let billTotal = enrichedItems.reduce((sum, i) => {
+                    const lineTotal = (i.price || 0) * (i.qty || 1);
+                    return sum + lineTotal - (i.discountAmount || 0);
+                }, 0);
+
+                // Subtract bill-level discount if present
+                if (hasBillDiscount) {
+                    billTotal -= parseFloat(req.body.billDiscountAmount) || 0;
+                }
+
+                const newCredit = billTotal - totalPaying;
+
+                if (newCredit > 0 && (customerDoc.balance + newCredit) > customerDoc.creditLimit) {
+                    return res.status(400).json({
+                        message: `Credit limit exceeded. Limit: Rs ${customerDoc.creditLimit}, Outstanding: Rs ${customerDoc.balance}, New credit: Rs ${newCredit}`
+                    });
+                }
+            }
+        }
+
+        const session = await mongoose.startSession();
+        try {
+            session.startTransaction();
+
+            // ── Stock validation inside transaction (prevents TOCTOU race) ──
+            if (billStatus === "completed") {
+                const productIds = items
+                    .filter((i) => i.product && mongoose.Types.ObjectId.isValid(i.product))
+                    .map((i) => i.product);
+
+                if (productIds.length > 0) {
+                    const products = await Product.find(
+                        { _id: { $in: productIds }, business: req.user.businessId, trackStock: true },
+                        { name: 1, stockQuantity: 1 }
+                    ).session(session).lean();
+
+                    const stockMap = new Map();
+                    for (const p of products) stockMap.set(p._id.toString(), p);
+
+                    const outOfStock = [];
+                    for (const item of items) {
+                        if (!item.product) continue;
+                        const prod = stockMap.get(item.product.toString());
+                        if (prod && prod.stockQuantity < (item.qty || 1)) {
+                            outOfStock.push({
+                                name: item.name || prod.name,
+                                requested: item.qty,
+                                available: prod.stockQuantity,
+                            });
+                        }
+                    }
+
+                    if (outOfStock.length > 0) {
+                        await session.abortTransaction();
+                        // finally block handles session.endSession()
+                        return res.status(400).json({
+                            message: "Insufficient stock for some items",
+                            outOfStock,
+                        });
+                    }
+                }
+            }
+
+            // ── Atomic bill number (inside transaction) ──────────────
+            const billNumber = await Counter.getNextSequence("billNumber", req.user.businessId, session);
+
+            const bill = new Bill({
+                billNumber,
+                business: req.user.businessId,
+                status: billStatus,
+                type: "sale",
+                items: enrichedItems,
+                payments,
+                cashGiven: req.body.cashGiven || 0,
+                idempotencyKey: idempotencyKey || undefined,
+
+                // People
+                cashier: req.user.id,
+                cashierName: req.user.name || "Staff",
+                customer: req.body.customer || null,
+                customerName: customerDoc?.name || req.body.customerName || "Walk-in",
+                customerPhone: customerDoc?.phone || req.body.customerPhone || "",
+
+                // Bill-level discount
+                billDiscountAmount: parseFloat(req.body.billDiscountAmount) || 0,
+                billDiscountReason: req.body.billDiscountReason || "",
+
+                // Discount history
+                discountHistory,
+
+                // Hold info
+                holdNote: billStatus === "hold" ? req.body.holdNote || "" : "",
+                holdAt: billStatus === "hold" ? now : null,
+
+                // Meta
+                billName: req.body.billName || "",
+                notes: req.body.notes || "",
+                date: now.toISOString().slice(0, 10),
+                time: now.toTimeString().slice(0, 8),
+            });
+
+            const saved = await bill.save({ session });
+
+            // Update discount history with calculated amounts
+            if (saved.discountHistory.length > 0 && saved.totalDiscount > 0) {
+                const entry = saved.discountHistory[saved.discountHistory.length - 1];
+                entry.totalDiscountAmount = saved.totalDiscount;
+                if (entry.mode === "bill") {
+                    entry.billDiscountAmount = saved.billDiscountAmount;
+                } else if (entry.mode === "item") {
+                    for (const hItem of entry.itemDiscounts) {
+                        const billItem = saved.items.find(
+                            (i) => i.name === hItem.name && i.product?.toString() === hItem.product?.toString()
+                        );
+                        if (billItem) hItem.discountAmount = billItem.discountAmount;
+                    }
+                }
+                await saved.save({ session });
+            }
+
+            // Stock deduction (only for completed sales)
+            if (billStatus === "completed") {
+                await deductStock(enrichedItems, req.user.businessId, {
+                    id: saved._id,
+                    number: saved.billNumber,
+                    performedBy: req.user.name || 'Staff'
+                }, session);
+            }
+
+            await session.commitTransaction();
+            res.status(201).json(saved);
+        } catch (txError) {
+            await session.abortTransaction();
+            throw txError;
+        } finally {
+            session.endSession();
+        }
     } catch (error) {
         console.error("Error creating bill:", error);
 
@@ -215,6 +436,17 @@ export const createBill = async (req, res) => {
                 alreadyPaid: true,
                 bill: existing,
                 message: `Bill has already been processed`,
+            });
+        }
+
+        // Mongoose validation errors → 400 Bad Request
+        if (error.name === "ValidationError") {
+            const fields = Object.keys(error.errors).join(", ");
+            return res.status(400).json({
+                message: `Validation failed: ${fields}`,
+                errors: Object.fromEntries(
+                    Object.entries(error.errors).map(([key, err]) => [key, err.message])
+                ),
             });
         }
 
@@ -242,7 +474,7 @@ export const getAllBills = async (req, res) => {
         if (req.query.startDate || req.query.endDate) {
             query.createdAt = {};
             if (req.query.startDate) query.createdAt.$gte = new Date(req.query.startDate);
-            if (req.query.endDate) query.createdAt.$lte = new Date(req.query.endDate);
+            if (req.query.endDate) query.createdAt.$lte = endOfDay(req.query.endDate);
         }
 
         const total = await Bill.countDocuments(query);
@@ -336,12 +568,66 @@ export const updateBill = async (req, res) => {
  */
 export const deleteBill = async (req, res) => {
     try {
-        const bill = await Bill.findOneAndDelete({
+        const bill = await Bill.findOne({
             _id: req.params.id,
             business: req.user.businessId,
         });
 
         if (!bill) return res.status(404).json({ message: "Bill not found" });
+
+        // Prevent deleting completed bills — use refund instead
+        if (bill.status === "completed") {
+            return res.status(400).json({
+                message: "Cannot delete a completed bill. Use refund instead."
+            });
+        }
+
+        const customerId = bill.customer;
+        const businessId = bill.business;
+
+        await Bill.deleteOne({ _id: bill._id });
+
+        // deleteOne doesn't trigger post-save hook, so manually sync customer ledger
+        if (customerId) {
+            const result = await Bill.aggregate([
+                {
+                    $match: {
+                        customer: customerId,
+                        business: businessId,
+                        status: { $ne: "cancelled" }
+                    }
+                },
+                {
+                    $group: {
+                        _id: null,
+                        totalBilled: { $sum: "$total" },
+                        totalPaid: { $sum: "$amountPaid" },
+                        totalReturns: {
+                            $sum: { $cond: [{ $ne: ["$returnStatus", "none"] }, 1, 0] }
+                        },
+                        totalPurchases: { $sum: 1 },
+                        lastPurchase: { $max: "$createdAt" }
+                    }
+                }
+            ]);
+
+            if (result.length > 0) {
+                const stats = result[0];
+                await Customer.findByIdAndUpdate(customerId, {
+                    totalBilled: stats.totalBilled,
+                    totalPaid: stats.totalPaid,
+                    balance: stats.totalBilled - stats.totalPaid,
+                    totalPurchases: stats.totalPurchases,
+                    totalReturns: stats.totalReturns,
+                    lastPurchase: stats.lastPurchase
+                });
+            } else {
+                await Customer.findByIdAndUpdate(customerId, {
+                    totalBilled: 0, totalPaid: 0, balance: 0,
+                    totalPurchases: 0, totalReturns: 0, lastPurchase: null
+                });
+            }
+        }
 
         res.json({ message: "Bill deleted", bill });
     } catch (error) {
@@ -370,7 +656,6 @@ export const holdBill = async (req, res) => {
         }
 
         const enrichedItems = await enrichItemsWithCost(items, req.user.businessId);
-        const billNumber = await Counter.getNextSequence("billNumber", req.user.businessId);
         const now = new Date();
 
         // Build payment if partial payment was made
@@ -387,28 +672,99 @@ export const holdBill = async (req, res) => {
             });
         }
 
-        const bill = new Bill({
-            billNumber,
-            business: req.user.businessId,
-            status: "hold",
-            type: "sale",
-            items: enrichedItems,
-            payments,
-            cashier: req.user.id,
-            cashierName: req.user.name || "Staff",
-            customer: req.body.customer || null,
-            customerName: req.body.customerName || "Walk-in",
-            customerPhone: req.body.customerPhone || "",
-            holdNote: req.body.holdNote || req.body.billName || "",
-            holdAt: now,
-            billName: req.body.billName || "",
-            notes: req.body.notes || "",
-            date: now.toLocaleDateString(),
-            time: now.toLocaleTimeString(),
-        });
+        // ── Discount validation ──────────────────────────────────
+        const hasItemDiscounts = enrichedItems.some((i) => (i.discountAmount || 0) > 0);
+        const hasBillDiscount = (parseFloat(req.body.billDiscountAmount) || 0) > 0;
 
-        const saved = await bill.save();
-        res.status(201).json(saved);
+        if (hasItemDiscounts && hasBillDiscount) {
+            return res.status(400).json({
+                message: "Cannot apply both item-level and bill-level discounts on the same bill. Choose one.",
+            });
+        }
+
+        // Build discount history
+        const discountHistory = [];
+        if (hasItemDiscounts) {
+            discountHistory.push({
+                appliedBy: req.user.id,
+                appliedByName: req.user.name || "Staff",
+                appliedAt: now,
+                mode: "item",
+                itemDiscounts: enrichedItems
+                    .filter((i) => (i.discountAmount || 0) > 0)
+                    .map((i) => ({
+                        name: i.name, product: i.product || null, qty: i.qty,
+                        discountAmount: i.discountAmount,
+                    })),
+                totalDiscountAmount: 0,
+            });
+        } else if (hasBillDiscount) {
+            discountHistory.push({
+                appliedBy: req.user.id,
+                appliedByName: req.user.name || "Staff",
+                appliedAt: now,
+                mode: "bill",
+                billDiscountAmount: parseFloat(req.body.billDiscountAmount),
+                reason: req.body.billDiscountReason || "",
+                totalDiscountAmount: 0,
+            });
+        }
+
+        const session = await mongoose.startSession();
+        try {
+            session.startTransaction();
+            const billNumber = await Counter.getNextSequence("billNumber", req.user.businessId, session);
+
+            const bill = new Bill({
+                billNumber,
+                business: req.user.businessId,
+                status: "hold",
+                type: "sale",
+                items: enrichedItems,
+                payments,
+                cashier: req.user.id,
+                cashierName: req.user.name || "Staff",
+                customer: req.body.customer || null,
+                customerName: req.body.customerName || "Walk-in",
+                customerPhone: req.body.customerPhone || "",
+                billDiscountAmount: parseFloat(req.body.billDiscountAmount) || 0,
+                billDiscountReason: req.body.billDiscountReason || "",
+                discountHistory,
+                holdNote: req.body.holdNote || req.body.billName || "",
+                holdAt: now,
+                billName: req.body.billName || "",
+                notes: req.body.notes || "",
+                date: now.toISOString().slice(0, 10),
+                time: now.toTimeString().slice(0, 8),
+            });
+
+            const saved = await bill.save({ session });
+
+            // Update discount history with calculated amounts
+            if (saved.discountHistory.length > 0 && saved.totalDiscount > 0) {
+                const entry = saved.discountHistory[saved.discountHistory.length - 1];
+                entry.totalDiscountAmount = saved.totalDiscount;
+                if (entry.mode === "bill") {
+                    entry.billDiscountAmount = saved.billDiscountAmount;
+                } else if (entry.mode === "item") {
+                    for (const hItem of entry.itemDiscounts) {
+                        const billItem = saved.items.find(
+                            (i) => i.name === hItem.name && i.product?.toString() === hItem.product?.toString()
+                        );
+                        if (billItem) hItem.discountAmount = billItem.discountAmount;
+                    }
+                }
+                await saved.save({ session });
+            }
+
+            await session.commitTransaction();
+            res.status(201).json(saved);
+        } catch (txError) {
+            await session.abortTransaction();
+            throw txError;
+        } finally {
+            session.endSession();
+        }
     } catch (error) {
         console.error("Error creating hold bill:", error);
         res.status(500).json({ message: "Failed to create hold bill" });
@@ -458,9 +814,64 @@ export const resumeHoldBill = async (req, res) => {
         if (!bill) return res.status(404).json({ message: "Hold bill not found" });
 
         bill.status = "completed";
-        const saved = await bill.save();
 
-        res.json(saved);
+        const session = await mongoose.startSession();
+        try {
+            session.startTransaction();
+
+            // ── Stock validation inside transaction ──────────────────
+            const productIds = bill.items
+                .filter((i) => i.product && mongoose.Types.ObjectId.isValid(i.product))
+                .map((i) => i.product);
+
+            if (productIds.length > 0) {
+                const products = await Product.find(
+                    { _id: { $in: productIds }, business: req.user.businessId, trackStock: true },
+                    { name: 1, stockQuantity: 1 }
+                ).session(session).lean();
+
+                const stockMap = new Map();
+                for (const p of products) stockMap.set(p._id.toString(), p);
+
+                const outOfStock = [];
+                for (const item of bill.items) {
+                    if (!item.product) continue;
+                    const prod = stockMap.get(item.product.toString());
+                    if (prod && prod.stockQuantity < (item.qty || 1)) {
+                        outOfStock.push({
+                            name: item.name || prod.name,
+                            requested: item.qty,
+                            available: prod.stockQuantity,
+                        });
+                    }
+                }
+
+                if (outOfStock.length > 0) {
+                    await session.abortTransaction();
+                    // finally block handles session.endSession()
+                    return res.status(400).json({
+                        message: "Insufficient stock for some items",
+                        outOfStock,
+                    });
+                }
+            }
+
+            const saved = await bill.save({ session });
+
+            await deductStock(saved.items, req.user.businessId, {
+                id: saved._id,
+                number: saved.billNumber,
+                performedBy: req.user.name || 'Staff'
+            }, session);
+
+            await session.commitTransaction();
+            res.json(saved);
+        } catch (txError) {
+            await session.abortTransaction();
+            throw txError;
+        } finally {
+            session.endSession();
+        }
     } catch (error) {
         console.error("Error resuming hold bill:", error);
         res.status(500).json({ message: "Failed to resume hold bill" });
@@ -487,8 +898,18 @@ export const cancelHoldBill = async (req, res) => {
         bill.cancelledAt = new Date();
         bill.refundOnCancel = parseFloat(req.body.refundOnCancel) || 0;
 
-        const saved = await bill.save();
-        res.json(saved);
+        const session = await mongoose.startSession();
+        try {
+            session.startTransaction();
+            const saved = await bill.save({ session });
+            await session.commitTransaction();
+            res.json(saved);
+        } catch (txError) {
+            await session.abortTransaction();
+            throw txError;
+        } finally {
+            session.endSession();
+        }
     } catch (error) {
         console.error("Error cancelling hold bill:", error);
         res.status(500).json({ message: "Failed to cancel hold bill" });
@@ -507,97 +928,138 @@ export const cancelHoldBill = async (req, res) => {
  */
 export const processReturn = async (req, res) => {
     try {
-        const bill = await Bill.findOne({
-            _id: req.params.id,
-            business: req.user.businessId,
-            status: "completed",
-            type: "sale",
-        });
-
-        if (!bill) {
-            return res.status(404).json({ message: "Completed sale bill not found" });
-        }
-
-        const { items, refundMethod, notes } = req.body;
+        const { items } = req.body;
 
         if (!items || items.length === 0) {
             return res.status(400).json({ message: "No items to return" });
         }
 
-        // Validate return quantities don't exceed remaining
-        for (const returnItem of items) {
-            const billItem = bill.items.id(returnItem.itemId);
-            if (!billItem) {
-                return res.status(400).json({
-                    message: `Item not found in bill: ${returnItem.name || returnItem.itemId}`,
-                });
-            }
-            const remaining = billItem.qty - billItem.returnedQty;
-            if (returnItem.quantity > remaining) {
-                return res.status(400).json({
-                    message: `Cannot return ${returnItem.quantity} of "${billItem.name}" - only ${remaining} remaining`,
-                });
-            }
-        }
-
-        // Generate return number
-        const returnNumber = await generateReturnNumber(req.user.businessId);
-
-        // Build return entry
+        // Everything inside a single transaction to prevent race conditions
+        // (two concurrent returns could both pass the "remaining qty" check
+        // if the bill is fetched outside the transaction).
+        const session = await mongoose.startSession();
+        let saved;
+        let returnNumber;
         let totalRefundAmount = 0;
-        let totalProfitLost = 0;
-        const returnItems = [];
+        let refundMethod;
 
-        for (const returnItem of items) {
-            const billItem = bill.items.id(returnItem.itemId);
+        try {
+            session.startTransaction();
 
-            const refundAmount = billItem.price * returnItem.quantity;
-            const profitLost = (billItem.price - billItem.costPrice) * returnItem.quantity;
+            // Fetch bill inside transaction — locks the document
+            const bill = await Bill.findOne({
+                _id: req.params.id,
+                business: req.user.businessId,
+                status: "completed",
+                type: "sale",
+            }).session(session);
 
-            totalRefundAmount += refundAmount;
-            totalProfitLost += profitLost;
+            if (!bill) {
+                await session.abortTransaction();
+                session.endSession();
+                return res.status(404).json({ message: "Completed sale bill not found" });
+            }
 
-            returnItems.push({
-                name: billItem.name,
-                quantity: returnItem.quantity,
-                price: billItem.price,
-                costPrice: billItem.costPrice,
-                refundAmount,
-                profitLost,
-                reason: returnItem.reason || "changed_mind",
-                reasonNote: returnItem.reasonNote || "",
+            // Auto-select refund method based on who the bill belongs to:
+            //   - has customer  → ledger_adjust (reduces their balance, no cash moves)
+            //   - walk-in        → cash refund (counted in sales report)
+            const isCustomerBill = !!bill.customer;
+            refundMethod = isCustomerBill ? "ledger_adjust" : "cash";
+
+            // Validate return quantities don't exceed remaining
+            for (const returnItem of items) {
+                const billItem = bill.items.id(returnItem.itemId);
+                if (!billItem) {
+                    await session.abortTransaction();
+                    session.endSession();
+                    return res.status(400).json({
+                        message: `Item not found in bill: ${returnItem.name || returnItem.itemId}`,
+                    });
+                }
+                const remaining = billItem.qty - billItem.returnedQty;
+                if (returnItem.quantity > remaining) {
+                    await session.abortTransaction();
+                    session.endSession();
+                    return res.status(400).json({
+                        message: `Cannot return ${returnItem.quantity} of "${billItem.name}" - only ${remaining} remaining`,
+                    });
+                }
+            }
+
+            // Discount-aware refund: apportion bill-level discount + tax across items.
+            const grossWithTax = (bill.subtotal || 0) + (bill.totalTax || 0);
+            const billRatio = grossWithTax > 0 ? (bill.total / grossWithTax) : 1;
+
+            // Build return entry
+            let totalProfitLost = 0;
+            const returnItems = [];
+
+            for (const returnItem of items) {
+                const billItem = bill.items.id(returnItem.itemId);
+
+                const itemTax = (billItem.gst || 0) * billItem.qty;
+                const itemGrossWithTax = billItem.itemTotal + itemTax;
+                const effectiveLineValue = itemGrossWithTax * billRatio;
+                const effectiveUnitPrice = effectiveLineValue / (billItem.qty || 1);
+
+                const refundAmount = Math.round(effectiveUnitPrice * returnItem.quantity * 100) / 100;
+                const profitLost = Math.round((effectiveUnitPrice - billItem.costPrice) * returnItem.quantity * 100) / 100;
+
+                totalRefundAmount += refundAmount;
+                totalProfitLost += profitLost;
+
+                returnItems.push({
+                    product: billItem.product || null,
+                    name: billItem.name,
+                    quantity: returnItem.quantity,
+                    price: billItem.price,
+                    costPrice: billItem.costPrice,
+                    refundAmount,
+                    profitLost,
+                    reason: returnItem.reason || "changed_mind",
+                    reasonNote: returnItem.reasonNote || "",
+                });
+
+                billItem.returnedQty += returnItem.quantity;
+            }
+
+            // Restore stock for returned items
+            const stockItems = items
+                .map((ri) => {
+                    const billItem = bill.items.id(ri.itemId);
+                    return billItem?.product
+                        ? { product: billItem.product, quantity: ri.quantity, name: billItem.name, price: billItem.price }
+                        : null;
+                })
+                .filter(Boolean);
+
+            returnNumber = await generateReturnNumber(req.user.businessId, session);
+
+            bill.returns.push({
+                returnNumber,
+                items: returnItems,
+                refundMethod,
+                refundAmount: totalRefundAmount,
+                profitLost: totalProfitLost,
+                processedBy: req.user.id,
+                processedByName: req.user.name || "Staff",
+                returnedAt: new Date(),
             });
 
-            // Update the bill item's returnedQty
-            billItem.returnedQty += returnItem.quantity;
+            saved = await bill.save({ session });
+            await restoreStock(stockItems, req.user.businessId, {
+                id: bill._id,
+                number: returnNumber,
+                reason: 'Bill return',
+                performedBy: req.user.name || 'Staff'
+            }, session);
+            await session.commitTransaction();
+        } catch (txError) {
+            await session.abortTransaction();
+            throw txError;
+        } finally {
+            session.endSession();
         }
-
-        // Push return entry onto bill
-        bill.returns.push({
-            returnNumber,
-            items: returnItems,
-            refundMethod: refundMethod || "cash",
-            refundAmount: totalRefundAmount,
-            profitLost: totalProfitLost,
-            processedBy: req.user.id,
-            processedByName: req.user.name || "Staff",
-            returnedAt: new Date(),
-        });
-
-        // Pre-save hook recalculates totals, returnStatus, netProfit etc.
-        const saved = await bill.save();
-
-        // Restore stock for returned items
-        const stockItems = items
-            .map((ri) => {
-                const billItem = bill.items.id(ri.itemId);
-                return billItem?.product
-                    ? { product: billItem.product, quantity: ri.quantity }
-                    : null;
-            })
-            .filter(Boolean);
-
-        await restoreStock(stockItems, req.user.businessId);
 
         res.json({
             message: "Return processed successfully",
@@ -607,7 +1069,16 @@ export const processReturn = async (req, res) => {
         });
     } catch (error) {
         console.error("Error processing return:", error);
-        res.status(500).json({ message: "Failed to process return" });
+        if (error.name === "ValidationError") {
+            const fields = Object.keys(error.errors).join(", ");
+            return res.status(400).json({
+                message: `Validation failed: ${fields}`,
+                errors: Object.fromEntries(
+                    Object.entries(error.errors).map(([key, err]) => [key, err.message])
+                ),
+            });
+        }
+        res.status(500).json({ message: "Failed to process return", error: error.message });
     }
 };
 
@@ -625,7 +1096,7 @@ export const getReturns = async (req, res) => {
         if (req.query.startDate || req.query.endDate) {
             query.createdAt = {};
             if (req.query.startDate) query.createdAt.$gte = new Date(req.query.startDate);
-            if (req.query.endDate) query.createdAt.$lte = new Date(req.query.endDate);
+            if (req.query.endDate) query.createdAt.$lte = endOfDay(req.query.endDate);
         }
 
         const bills = await Bill.find(query)
@@ -742,53 +1213,287 @@ export const getReturnsSummary = async (req, res) => {
  */
 export const cancelReturn = async (req, res) => {
     try {
-        const bill = await Bill.findOne({
-            _id: req.params.id,
-            business: req.user.businessId,
-        });
+        const session = await mongoose.startSession();
+        let saved;
 
-        if (!bill) return res.status(404).json({ message: "Bill not found" });
+        try {
+            session.startTransaction();
 
-        const returnEntry = bill.returns.id(req.params.returnId);
-        if (!returnEntry) {
-            return res.status(404).json({ message: "Return entry not found" });
-        }
+            const bill = await Bill.findOne({
+                _id: req.params.id,
+                business: req.user.businessId,
+                status: "completed",
+                type: "sale",
+            }).session(session);
 
-        // Restore item returnedQty on the bill
-        for (const returnItem of returnEntry.items) {
-            const billItem = bill.items.find(
-                (i) => i.name.toLowerCase() === returnItem.name.toLowerCase()
-            );
-            if (billItem) {
-                billItem.returnedQty = Math.max(0, billItem.returnedQty - returnItem.quantity);
+            if (!bill) {
+                await session.abortTransaction();
+                session.endSession();
+                return res.status(404).json({ message: "Completed sale bill not found" });
             }
-        }
 
-        // Reverse stock restoration (deduct the stock that was restored during the return)
-        const stockItems = [];
-        for (const returnItem of returnEntry.items) {
-            const billItem = bill.items.find(
-                (i) => i.name.toLowerCase() === returnItem.name.toLowerCase()
-            );
-            if (billItem?.product) {
-                stockItems.push({
-                    product: billItem.product,
-                    qty: returnItem.quantity, // deductStock uses .qty
-                });
+            const returnEntry = bill.returns.id(req.params.returnId);
+            if (!returnEntry) {
+                await session.abortTransaction();
+                session.endSession();
+                return res.status(404).json({ message: "Return entry not found" });
             }
+
+            // Restore item returnedQty on the bill
+            for (const returnItem of returnEntry.items) {
+                const billItem = returnItem.product
+                    ? bill.items.find((i) => i.product?.toString() === returnItem.product.toString())
+                    : bill.items.find((i) => i.name.toLowerCase() === returnItem.name.toLowerCase());
+                if (billItem) {
+                    billItem.returnedQty = Math.max(0, billItem.returnedQty - returnItem.quantity);
+                }
+            }
+
+            // Reverse stock restoration (deduct the stock that was restored during the return)
+            const stockItems = [];
+            for (const returnItem of returnEntry.items) {
+                const billItem = returnItem.product
+                    ? bill.items.find((i) => i.product?.toString() === returnItem.product.toString())
+                    : bill.items.find((i) => i.name.toLowerCase() === returnItem.name.toLowerCase());
+                if (billItem?.product) {
+                    stockItems.push({
+                        product: billItem.product,
+                        qty: returnItem.quantity,
+                        name: billItem.name,
+                        price: billItem.price,
+                    });
+                }
+            }
+
+            bill.returns.pull(req.params.returnId);
+
+            await deductStock(stockItems, req.user.businessId, {
+                id: bill._id,
+                number: bill.billNumber,
+                performedBy: req.user.name || 'Staff'
+            }, session);
+            saved = await bill.save({ session });
+            await session.commitTransaction();
+        } catch (txError) {
+            await session.abortTransaction();
+            throw txError;
+        } finally {
+            session.endSession();
         }
-        await deductStock(stockItems, req.user.businessId);
-
-        // Remove the return entry
-        bill.returns.pull(req.params.returnId);
-
-        // Pre-save recalculates totals, returnStatus, etc.
-        const saved = await bill.save();
 
         res.json({ message: "Return cancelled successfully", bill: saved });
     } catch (error) {
         console.error("Error cancelling return:", error);
         res.status(500).json({ message: "Failed to cancel return" });
+    }
+};
+
+/**
+ * GET /bills/return-lookup/product/:productId?days=60
+ * Find walk-in bills (no customer attached) from the last N days that contain
+ * the given product and still have returnable quantity remaining.
+ *
+ * Used by the return-without-receipt flow: cashier scans the product, picks
+ * the original bill from the list, then proceeds with a linked return.
+ * Customer bills are NOT returned here — customer returns go through the
+ * customer ledger directly.
+ */
+export const lookupBillsByProduct = async (req, res) => {
+    try {
+        const { productId } = req.params;
+        if (!mongoose.Types.ObjectId.isValid(productId)) {
+            return res.status(400).json({ message: "Invalid product id" });
+        }
+
+        const days = Math.min(parseInt(req.query.days) || 60, 365);
+        const since = new Date();
+        since.setDate(since.getDate() - days);
+
+        const bills = await Bill.find({
+            business: req.user.businessId,
+            status: "completed",
+            type: "sale",
+            customer: null, // walk-in only
+            createdAt: { $gte: since },
+            "items.product": new mongoose.Types.ObjectId(productId),
+        })
+            .sort({ createdAt: -1 })
+            .limit(50)
+            .lean();
+
+        // Filter to only bills where this product still has remaining qty
+        const matches = [];
+        for (const bill of bills) {
+            const item = bill.items.find(
+                (i) => i.product && i.product.toString() === productId
+            );
+            if (!item) continue;
+            const remaining = item.qty - (item.returnedQty || 0);
+            if (remaining <= 0) continue;
+
+            matches.push({
+                _id: bill._id,
+                billNumber: bill.billNumber,
+                createdAt: bill.createdAt,
+                total: bill.total,
+                paymentStatus: bill.paymentStatus,
+                cashierName: bill.cashierName,
+                item: {
+                    itemId: item._id,
+                    name: item.name,
+                    qty: item.qty,
+                    returnedQty: item.returnedQty || 0,
+                    remainingQty: remaining,
+                    price: item.price,
+                    itemTotal: item.itemTotal,
+                },
+            });
+        }
+
+        res.json({
+            productId,
+            windowDays: days,
+            count: matches.length,
+            bills: matches,
+        });
+    } catch (error) {
+        console.error("Error looking up bills by product:", error);
+        res.status(500).json({ message: "Failed to look up bills" });
+    }
+};
+
+/**
+ * POST /bills/standalone-refund
+ * Create a standalone refund bill for a walk-in customer when the original
+ * bill cannot be located (receiptless return). Creates a type:"refund" bill
+ * with no originalBill link and negative-priced items. Admin-only.
+ *
+ * Counts in sales reports as a separate "standalone refund" bucket so it
+ * doesn't pollute linked return metrics.
+ */
+export const createStandaloneRefund = async (req, res) => {
+    try {
+        // Admin-only — standalone refunds bypass the normal audit trail
+        if (!req.user.adminId) {
+            return res.status(403).json({
+                message: "Only admins can process receiptless refunds",
+            });
+        }
+
+        const {
+            items,
+            refundMethod = "cash",
+            customerName = "Walk-in",
+            customerPhone = "",
+            notes = "",
+            restock = false,
+        } = req.body;
+
+        if (!items || items.length === 0) {
+            return res.status(400).json({ message: "No items to refund" });
+        }
+
+        // Enrich with costPrice for items that reference a product
+        const enriched = await enrichItemsWithCost(items, req.user.businessId);
+
+        const refundItems = enriched.map((item) => ({
+            product: item.product || null,
+            name: item.name,
+            barcode: item.barcode || "",
+            category: item.category || "General",
+            qty: item.qty,
+            price: -Math.abs(item.price), // refund bills use negative prices
+            costPrice: item.costPrice || 0,
+            gst: 0,
+        }));
+
+        const stockItems = restock
+            ? enriched
+                .filter((i) => i.product)
+                .map((i) => ({
+                    product: i.product,
+                    quantity: i.qty,
+                    name: i.name,
+                    price: i.price,
+                }))
+            : [];
+
+        const now = new Date();
+        const session = await mongoose.startSession();
+        let savedRefund;
+        try {
+            session.startTransaction();
+
+            const refundBillNumber = await Counter.getNextSequence(
+                "billNumber",
+                req.user.businessId,
+                session
+            );
+
+            const refund = new Bill({
+                billNumber: refundBillNumber,
+                business: req.user.businessId,
+                status: "completed",
+                type: "refund",
+                items: refundItems,
+                originalBill: null, // standalone — no link
+                cashier: req.user.id,
+                cashierName: req.user.name || "Admin",
+                customer: null, // always walk-in
+                customerName: customerName || "Walk-in",
+                customerPhone: customerPhone || "",
+                notes: notes || "Standalone refund (no original bill)",
+                date: now.toISOString().slice(0, 10),
+                time: now.toTimeString().slice(0, 8),
+            });
+
+            // Track the refund method via payments array (negative since money leaves)
+            refund.payments.push({
+                amount: refundItems.reduce(
+                    (sum, i) => sum + i.price * i.qty,
+                    0
+                ),
+                method: refundMethod,
+                paidAt: now,
+                receivedBy: req.user.id,
+                receivedByName: "Admin",
+                note: "Standalone refund payout",
+            });
+
+            savedRefund = await refund.save({ session });
+
+            if (stockItems.length > 0) {
+                await restoreStock(
+                    stockItems,
+                    req.user.businessId,
+                    {
+                        id: savedRefund._id,
+                        number: `STANDALONE-${savedRefund.billNumber}`,
+                        reason: "Standalone refund",
+                        performedBy: req.user.name || "Admin",
+                    },
+                    session
+                );
+            }
+
+            await session.commitTransaction();
+        } catch (txError) {
+            await session.abortTransaction();
+            throw txError;
+        } finally {
+            session.endSession();
+        }
+
+        res.json({
+            message: "Standalone refund processed",
+            refundBill: savedRefund,
+        });
+    } catch (error) {
+        console.error("Error processing standalone refund:", error);
+        res.status(500).json({
+            message: "Failed to process standalone refund",
+            error: error.message,
+        });
     }
 };
 
@@ -838,7 +1543,7 @@ export const getBillStats = async (req, res) => {
                 prevPeriodEnd = today;
         }
 
-        const saleMatch = { type: "sale", status: { $ne: "cancelled" } };
+        const saleMatch = { type: "sale", status: "completed" };
 
         const facets = {
             // Current period sales
@@ -860,6 +1565,9 @@ export const getBillStats = async (req, res) => {
                         totalProfit: { $sum: "$billProfit" },
                         totalRefunded: { $sum: "$totalRefunded" },
                         netProfit: { $sum: "$netProfit" },
+                        totalDiscount: { $sum: { $ifNull: ["$totalDiscount", 0] } },
+                        totalItemDiscount: { $sum: { $ifNull: ["$totalItemDiscount", 0] } },
+                        totalBillDiscount: { $sum: { $ifNull: ["$billDiscountAmount", 0] } },
                     },
                 },
             ],
@@ -944,6 +1652,9 @@ export const getBillStats = async (req, res) => {
             totalProfit: 0,
             totalRefunded: 0,
             netProfit: 0,
+            totalDiscount: 0,
+            totalItemDiscount: 0,
+            totalBillDiscount: 0,
         };
         const prev = facetResult.prevPeriod[0] || { grossRevenue: 0 };
 
@@ -988,6 +1699,11 @@ export const getBillStats = async (req, res) => {
             totalItems: period.totalItems,
             avgOrderValue,
             growth,
+
+            // Discounts
+            totalDiscount: period.totalDiscount,
+            totalItemDiscount: period.totalItemDiscount,
+            totalBillDiscount: period.totalBillDiscount,
 
             // Returns & refunds
             totalRefunded: period.totalRefunded,
@@ -1044,7 +1760,7 @@ export const getTopProducts = async (req, res) => {
                 $match: {
                     business: businessId,
                     type: "sale",
-                    status: { $ne: "cancelled" },
+                    status: "completed",
                 },
             },
             { $unwind: "$items" },
@@ -1125,7 +1841,7 @@ export const addPayment = async (req, res) => {
             return res.status(400).json({ message: "Cannot add payment to a cancelled bill" });
         }
 
-        const { amount, method, note } = req.body;
+        const { amount, method, note, reference } = req.body;
 
         if (!amount || amount <= 0) {
             return res.status(400).json({ message: "Payment amount must be greater than 0" });
@@ -1136,188 +1852,953 @@ export const addPayment = async (req, res) => {
             method: method || "cash",
             paidAt: new Date(),
             receivedBy: req.user.id,
-            receivedByName: req.user.name || "Staff",
+            receivedByName: req.user.adminId ? "Admin" : (req.user.name || "Staff"),
             note: note || "",
+            reference: reference || "",
         });
 
         // If this is a hold bill and total payments >= total, auto-complete
         const newTotal = bill.payments.reduce((sum, p) => sum + p.amount, 0);
-        if (bill.status === "hold" && newTotal >= bill.total) {
+        const shouldComplete = bill.status === "hold" && newTotal >= bill.total;
+        if (shouldComplete) {
             bill.status = "completed";
-            // Deduct stock now that the hold bill is completed
-            await deductStock(bill.items, req.user.businessId);
         }
 
-        // Pre-save hook recalculates amountPaid, amountDue, paymentStatus
-        const saved = await bill.save();
+        // Use transaction so bill save + stock deduction are atomic
+        const session = await mongoose.startSession();
+        try {
+            session.startTransaction();
 
-        res.json(saved);
+            // ── Stock validation when auto-completing a hold bill ────
+            if (shouldComplete) {
+                const productIds = bill.items
+                    .filter((i) => i.product && mongoose.Types.ObjectId.isValid(i.product))
+                    .map((i) => i.product);
+
+                if (productIds.length > 0) {
+                    const products = await Product.find(
+                        { _id: { $in: productIds }, business: req.user.businessId, trackStock: true },
+                        { name: 1, stockQuantity: 1 }
+                    ).session(session).lean();
+
+                    const stockMap = new Map();
+                    for (const p of products) stockMap.set(p._id.toString(), p);
+
+                    const outOfStock = [];
+                    for (const item of bill.items) {
+                        if (!item.product) continue;
+                        const prod = stockMap.get(item.product.toString());
+                        if (prod && prod.stockQuantity < (item.qty || 1)) {
+                            outOfStock.push({
+                                name: item.name || prod.name,
+                                requested: item.qty,
+                                available: prod.stockQuantity,
+                            });
+                        }
+                    }
+
+                    if (outOfStock.length > 0) {
+                        await session.abortTransaction();
+                        // finally block handles session.endSession()
+                        return res.status(400).json({
+                            message: "Insufficient stock to complete this bill",
+                            outOfStock,
+                        });
+                    }
+                }
+            }
+
+            const saved = await bill.save({ session });
+
+            if (shouldComplete) {
+                await deductStock(saved.items, req.user.businessId, {
+                    id: saved._id,
+                    number: saved.billNumber,
+                    performedBy: req.user.name || 'Staff'
+                }, session);
+            }
+
+            await session.commitTransaction();
+            res.json(saved);
+        } catch (txError) {
+            await session.abortTransaction();
+            throw txError;
+        } finally {
+            session.endSession();
+        }
     } catch (error) {
         console.error("Error adding payment:", error);
         res.status(500).json({ message: "Failed to add payment" });
     }
 };
 
+// ─── Helper: parse endDate to end-of-day so the full day is included ─────
+const endOfDay = (dateStr) => {
+    const d = new Date(dateStr);
+    d.setHours(23, 59, 59, 999);
+    return d;
+};
+
 // ═══════════════════════════════════════════════════════════════════════════
-// REFUND
+// SALES BY PRODUCT (date range)
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * POST /bills/:id/refund
- * Full refund of a completed bill. Creates a linked refund bill (type:"refund").
+ * GET /bills/report/sales-by-product?startDate=&endDate=&productId=&category=
+ * Shows how many units of each product were sold, revenue, discount, and profit
+ * within the given date range.
  */
-export const refundBill = async (req, res) => {
+export const salesByProduct = async (req, res) => {
     try {
-        const { reason } = req.body;
+        const businessId = new mongoose.Types.ObjectId(req.user.businessId);
+        const { startDate, endDate, productId, category } = req.query;
 
-        if (!reason) {
-            return res.status(400).json({ message: "Refund reason is required" });
-        }
-
-        const original = await Bill.findOne({
-            _id: req.params.id,
-            business: req.user.businessId,
-            status: "completed",
+        const match = {
+            business: businessId,
             type: "sale",
-        });
-
-        if (!original) {
-            return res.status(404).json({ message: "Completed sale bill not found" });
-        }
-
-        // Check if already refunded (a refund bill already references this one)
-        const existingRefund = await Bill.findOne({
-            originalBill: original._id,
-            type: "refund",
-            business: req.user.businessId,
-        });
-        if (existingRefund) {
-            return res.status(400).json({
-                message: "This bill has already been refunded",
-                refundBill: existingRefund,
-            });
-        }
-
-        const now = new Date();
-        const refundBillNumber = await Counter.getNextSequence("billNumber", req.user.businessId);
-
-        // Create refund bill with negative amounts
-        const refundItems = original.items.map((item) => ({
-            product: item.product,
-            name: item.name,
-            barcode: item.barcode,
-            category: item.category,
-            qty: item.qty,
-            price: -Math.abs(item.price),
-            costPrice: item.costPrice,
-            gst: item.gst,
-        }));
-
-        const refund = new Bill({
-            billNumber: refundBillNumber,
-            business: req.user.businessId,
             status: "completed",
-            type: "refund",
-            items: refundItems,
-            originalBill: original._id,
-            cashier: req.user.id,
-            cashierName: req.user.name || "Staff",
-            customer: original.customer,
-            customerName: original.customerName,
-            customerPhone: original.customerPhone,
-            notes: reason,
-            date: now.toLocaleDateString(),
-            time: now.toLocaleTimeString(),
-        });
+        };
 
-        const savedRefund = await refund.save();
+        if (startDate || endDate) {
+            match.createdAt = {};
+            if (startDate) match.createdAt.$gte = new Date(startDate);
+            if (endDate) match.createdAt.$lte = endOfDay(endDate);
+        }
 
-        // Restore stock for all items
-        const stockItems = original.items
-            .filter((i) => i.product)
-            .map((i) => ({ product: i.product, quantity: i.qty }));
-        await restoreStock(stockItems, req.user.businessId);
+        const itemMatch = {};
+        if (productId && mongoose.Types.ObjectId.isValid(productId)) {
+            itemMatch["items.product"] = new mongoose.Types.ObjectId(productId);
+        }
+        if (category) {
+            itemMatch["items.category"] = category;
+        }
 
-        res.json({
-            message: "Refund processed successfully",
-            originalBill: original,
-            refundBill: savedRefund,
-        });
+        const pipeline = [
+            { $match: match },
+            { $unwind: "$items" },
+        ];
+
+        if (Object.keys(itemMatch).length > 0) {
+            pipeline.push({ $match: itemMatch });
+        }
+
+        pipeline.push(
+            {
+                $group: {
+                    _id: { $ifNull: ["$items.product", "$items.name"] },
+                    name: { $first: "$items.name" },
+                    category: { $first: "$items.category" },
+                    barcode: { $first: "$items.barcode" },
+                    product: { $first: "$items.product" },
+                    totalQtySold: { $sum: "$items.qty" },
+                    totalReturnedQty: { $sum: "$items.returnedQty" },
+                    netQtySold: { $sum: { $subtract: ["$items.qty", "$items.returnedQty"] } },
+                    grossRevenue: { $sum: { $add: ["$items.itemTotal", "$items.discountAmount"] } },
+                    totalItemDiscount: { $sum: "$items.discountAmount" },
+                    netRevenue: { $sum: "$items.itemTotal" },
+                    totalCost: { $sum: { $multiply: ["$items.costPrice", "$items.qty"] } },
+                    totalProfit: { $sum: "$items.netProfit" },
+                    avgPrice: { $avg: "$items.price" },
+                    transactionCount: { $sum: 1 },
+                },
+            },
+            { $sort: { totalQtySold: -1 } }
+        );
+
+        const results = await Bill.aggregate(pipeline);
+
+        // Summary row
+        const summary = results.reduce(
+            (acc, r) => {
+                acc.totalQtySold += r.totalQtySold;
+                acc.totalReturnedQty += r.totalReturnedQty;
+                acc.netQtySold += r.netQtySold;
+                acc.grossRevenue += r.grossRevenue;
+                acc.totalItemDiscount += r.totalItemDiscount;
+                acc.netRevenue += r.netRevenue;
+                acc.totalCost += r.totalCost;
+                acc.totalProfit += r.totalProfit;
+                acc.totalTransactions += r.transactionCount;
+                return acc;
+            },
+            {
+                totalQtySold: 0, totalReturnedQty: 0, netQtySold: 0,
+                grossRevenue: 0, totalItemDiscount: 0, netRevenue: 0,
+                totalCost: 0, totalProfit: 0, totalTransactions: 0,
+            }
+        );
+        summary.profitMargin = summary.netRevenue > 0
+            ? Math.round((summary.totalProfit / summary.netRevenue) * 10000) / 100
+            : 0;
+
+        res.json({ products: results, summary });
     } catch (error) {
-        console.error("Error processing refund:", error);
-        res.status(500).json({ message: "Failed to process refund" });
+        console.error("Error fetching sales by product:", error);
+        res.status(500).json({ message: "Failed to fetch sales by product report" });
     }
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
-// CUSTOMER LEDGER
+// PROFIT REPORT (with expenses)
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
- * GET /bills/customer/:customerId/ledger
- * Get all bills for a specific customer with balance summary.
+ * GET /bills/report/profit?startDate=&endDate=&filter=today|week|month
+ * Full P&L: Revenue - COGS - Expenses = Net Profit
+ * Also includes discount breakdown.
  */
-export const getCustomerLedger = async (req, res) => {
+export const profitReport = async (req, res) => {
     try {
-        const customerId = req.params.customerId;
+        const businessId = new mongoose.Types.ObjectId(req.user.businessId);
+        const { startDate, endDate, filter } = req.query;
 
-        if (!mongoose.Types.ObjectId.isValid(customerId)) {
-            return res.status(400).json({ message: "Invalid customer ID" });
+        // Determine date range
+        const now = new Date();
+        let periodStart, periodEnd;
+
+        if (startDate && endDate) {
+            periodStart = new Date(startDate);
+            periodEnd = endOfDay(endDate);
+        } else {
+            switch (filter) {
+                case "week":
+                    periodStart = new Date(now);
+                    periodStart.setDate(periodStart.getDate() - 7);
+                    periodStart.setHours(0, 0, 0, 0);
+                    periodEnd = now;
+                    break;
+                case "month":
+                    periodStart = new Date(now.getFullYear(), now.getMonth(), 1);
+                    periodEnd = now;
+                    break;
+                case "year":
+                    periodStart = new Date(now.getFullYear(), 0, 1);
+                    periodEnd = now;
+                    break;
+                default: // today
+                    periodStart = new Date(now);
+                    periodStart.setHours(0, 0, 0, 0);
+                    periodEnd = now;
+            }
         }
 
-        const [bills, summary] = await Promise.all([
-            Bill.find({
-                customer: customerId,
-                business: req.user.businessId,
-                status: { $ne: "cancelled" },
-            })
-                .sort({ createdAt: -1 })
-                .lean(),
+        const dateMatch = { $gte: periodStart, $lte: periodEnd };
 
+        // Sales aggregation
+        const [salesResult, expenseResult] = await Promise.all([
             Bill.aggregate([
                 {
                     $match: {
-                        customer: new mongoose.Types.ObjectId(customerId),
-                        business: new mongoose.Types.ObjectId(req.user.businessId),
-                        status: { $ne: "cancelled" },
+                        business: businessId,
+                        type: "sale",
+                        status: "completed",
+                        createdAt: dateMatch,
                     },
                 },
                 {
                     $group: {
                         _id: null,
-                        totalBilled: { $sum: "$total" },
-                        totalPaid: { $sum: "$amountPaid" },
+                        grossRevenue: { $sum: { $add: ["$total", "$totalDiscount"] } },
+                        totalItemDiscount: { $sum: "$totalItemDiscount" },
+                        totalBillDiscount: { $sum: "$billDiscountAmount" },
+                        totalDiscount: { $sum: "$totalDiscount" },
+                        netRevenue: { $sum: "$total" },
+                        totalCost: { $sum: "$totalCost" },
+                        grossProfit: { $sum: "$billProfit" },
                         totalRefunded: { $sum: "$totalRefunded" },
-                        billCount: { $sum: 1 },
-                        returnsCount: {
-                            $sum: { $cond: [{ $ne: ["$returnStatus", "none"] }, 1, 0] },
-                        },
+                        returnedProfit: { $sum: "$returnedProfit" },
+                        netProfit: { $sum: "$netProfit" },
+                        totalOrders: { $sum: 1 },
+                        totalItems: { $sum: "$totalQty" },
                     },
                 },
             ]),
+            Expense.aggregate([
+                {
+                    $match: {
+                        business: businessId,
+                        status: "approved",
+                        date: dateMatch,
+                    },
+                },
+                {
+                    $group: {
+                        _id: null,
+                        totalExpenses: { $sum: "$amount" },
+                    },
+                },
+                // Also get breakdown by category
+            ]),
+        ]);
+
+        // Expense breakdown by category (separate query for clarity)
+        const expenseBreakdown = await Expense.aggregate([
+            {
+                $match: {
+                    business: businessId,
+                    status: "approved",
+                    date: dateMatch,
+                },
+            },
+            {
+                $group: {
+                    _id: "$category",
+                    amount: { $sum: "$amount" },
+                    count: { $sum: 1 },
+                },
+            },
+            { $sort: { amount: -1 } },
+        ]);
+
+        const sales = salesResult[0] || {
+            grossRevenue: 0, totalItemDiscount: 0, totalBillDiscount: 0,
+            totalDiscount: 0, netRevenue: 0, totalCost: 0, grossProfit: 0,
+            totalRefunded: 0, returnedProfit: 0, netProfit: 0,
+            totalOrders: 0, totalItems: 0,
+        };
+        const totalExpenses = expenseResult[0]?.totalExpenses || 0;
+
+        // True net profit = sales net profit - operating expenses
+        const trueNetProfit = sales.netProfit - totalExpenses;
+        const revenueAfterReturns = sales.netRevenue - sales.totalRefunded;
+        const profitMargin = revenueAfterReturns > 0
+            ? Math.round((trueNetProfit / revenueAfterReturns) * 10000) / 100
+            : 0;
+
+        res.json({
+            period: { start: periodStart, end: periodEnd, filter: filter || "custom" },
+
+            // Revenue
+            grossRevenue: sales.grossRevenue,
+            totalDiscount: sales.totalDiscount,
+            totalItemDiscount: sales.totalItemDiscount,
+            totalBillDiscount: sales.totalBillDiscount,
+            netRevenue: sales.netRevenue,
+            totalRefunded: sales.totalRefunded,
+            revenueAfterReturns,
+
+            // Cost & Profit
+            totalCost: sales.totalCost,
+            grossProfit: sales.grossProfit,
+            returnedProfit: sales.returnedProfit,
+            salesNetProfit: sales.netProfit,
+
+            // Expenses
+            totalExpenses,
+            expenseBreakdown,
+
+            // True P&L
+            trueNetProfit,
+            profitMargin,
+
+            // Volume
+            totalOrders: sales.totalOrders,
+            totalItems: sales.totalItems,
+            avgOrderValue: sales.totalOrders > 0 ? Math.round((sales.netRevenue / sales.totalOrders) * 100) / 100 : 0,
+        });
+    } catch (error) {
+        console.error("Error fetching profit report:", error);
+        res.status(500).json({ message: "Failed to fetch profit report" });
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SALES BY CATEGORY
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const salesByCategory = async (req, res) => {
+    try {
+        const { startDate, endDate } = req.query;
+        const match = {
+            business: new mongoose.Types.ObjectId(req.user.businessId),
+            status: "completed",
+            type: "sale",
+        };
+        if (startDate || endDate) {
+            match.createdAt = {};
+            if (startDate) match.createdAt.$gte = new Date(startDate);
+            if (endDate) match.createdAt.$lte = endOfDay(endDate);
+        }
+
+        const results = await Bill.aggregate([
+            { $match: match },
+            { $unwind: "$items" },
+            {
+                $group: {
+                    _id: "$items.category",
+                    totalQtySold: { $sum: "$items.qty" },
+                    totalReturnedQty: { $sum: "$items.returnedQty" },
+                    grossRevenue: { $sum: { $add: ["$items.itemTotal", { $ifNull: ["$items.discountAmount", 0] }] } },
+                    totalDiscount: { $sum: { $ifNull: ["$items.discountAmount", 0] } },
+                    netRevenue: { $sum: "$items.itemTotal" },
+                    totalCost: { $sum: { $multiply: [{ $ifNull: ["$items.costPrice", 0] }, "$items.qty"] } },
+                    totalProfit: { $sum: "$items.netProfit" },
+                    transactionCount: { $sum: 1 },
+                }
+            },
+            {
+                $project: {
+                    category: { $ifNull: ["$_id", "Uncategorized"] },
+                    totalQtySold: 1,
+                    totalReturnedQty: 1,
+                    netQtySold: { $subtract: ["$totalQtySold", "$totalReturnedQty"] },
+                    grossRevenue: 1,
+                    totalDiscount: 1,
+                    netRevenue: 1,
+                    totalCost: 1,
+                    totalProfit: 1,
+                    transactionCount: 1,
+                }
+            },
+            { $sort: { grossRevenue: -1 } }
+        ]);
+
+        const totalRevenue = results.reduce((s, r) => s + r.grossRevenue, 0);
+        const data = results.map(r => ({
+            ...r,
+            revenuePercentage: totalRevenue > 0 ? Math.round((r.grossRevenue / totalRevenue) * 10000) / 100 : 0,
+            profitMargin: r.netRevenue > 0 ? Math.round((r.totalProfit / r.netRevenue) * 10000) / 100 : 0,
+        }));
+
+        res.json({ categories: data, totalRevenue });
+    } catch (error) {
+        console.error("Error fetching sales by category:", error);
+        res.status(500).json({ message: "Failed to fetch sales by category" });
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SALES BY CASHIER/EMPLOYEE
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const salesByCashier = async (req, res) => {
+    try {
+        const { startDate, endDate } = req.query;
+        const match = {
+            business: new mongoose.Types.ObjectId(req.user.businessId),
+            status: "completed",
+            type: "sale",
+        };
+        if (startDate || endDate) {
+            match.createdAt = {};
+            if (startDate) match.createdAt.$gte = new Date(startDate);
+            if (endDate) match.createdAt.$lte = endOfDay(endDate);
+        }
+
+        const results = await Bill.aggregate([
+            { $match: match },
+            {
+                $group: {
+                    _id: { cashier: "$cashier", cashierName: "$cashierName" },
+                    totalSales: { $sum: "$total" },
+                    totalDiscount: { $sum: "$totalDiscount" },
+                    totalRefunded: { $sum: "$totalRefunded" },
+                    netSales: { $sum: { $subtract: ["$total", { $ifNull: ["$totalRefunded", 0] }] } },
+                    totalProfit: { $sum: "$netProfit" },
+                    billCount: { $sum: 1 },
+                    totalItems: { $sum: { $size: "$items" } },
+                    totalQty: { $sum: "$totalQty" },
+                    avgOrderValue: { $avg: "$total" },
+                }
+            },
+            {
+                $project: {
+                    cashierId: "$_id.cashier",
+                    cashierName: { $ifNull: ["$_id.cashierName", "Unknown"] },
+                    totalSales: 1,
+                    totalDiscount: 1,
+                    totalRefunded: 1,
+                    netSales: 1,
+                    totalProfit: 1,
+                    billCount: 1,
+                    totalItems: 1,
+                    totalQty: 1,
+                    avgOrderValue: { $round: ["$avgOrderValue", 2] },
+                }
+            },
+            { $sort: { totalSales: -1 } }
+        ]);
+
+        res.json({ cashiers: results });
+    } catch (error) {
+        console.error("Error fetching sales by cashier:", error);
+        res.status(500).json({ message: "Failed to fetch sales by cashier" });
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PAYMENT METHOD BREAKDOWN
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const paymentMethodReport = async (req, res) => {
+    try {
+        const { startDate, endDate } = req.query;
+        const match = {
+            business: new mongoose.Types.ObjectId(req.user.businessId),
+            status: "completed",
+            type: "sale",
+        };
+        if (startDate || endDate) {
+            match.createdAt = {};
+            if (startDate) match.createdAt.$gte = new Date(startDate);
+            if (endDate) match.createdAt.$lte = endOfDay(endDate);
+        }
+
+        const results = await Bill.aggregate([
+            { $match: match },
+            { $unwind: "$payments" },
+            {
+                $group: {
+                    _id: "$payments.method",
+                    totalAmount: { $sum: "$payments.amount" },
+                    transactionCount: { $sum: 1 },
+                }
+            },
+            { $sort: { totalAmount: -1 } }
+        ]);
+
+        const grandTotal = results.reduce((s, r) => s + r.totalAmount, 0);
+        const methods = results.map(r => ({
+            method: r._id || "unknown",
+            totalAmount: r.totalAmount,
+            transactionCount: r.transactionCount,
+            percentage: grandTotal > 0 ? Math.round((r.totalAmount / grandTotal) * 10000) / 100 : 0,
+        }));
+
+        res.json({ methods, grandTotal });
+    } catch (error) {
+        console.error("Error fetching payment method report:", error);
+        res.status(500).json({ message: "Failed to fetch payment method report" });
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TAX/GST COLLECTION REPORT
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const taxReport = async (req, res) => {
+    try {
+        const { startDate, endDate } = req.query;
+        const match = {
+            business: new mongoose.Types.ObjectId(req.user.businessId),
+            status: "completed",
+            type: "sale",
+        };
+        if (startDate || endDate) {
+            match.createdAt = {};
+            if (startDate) match.createdAt.$gte = new Date(startDate);
+            if (endDate) match.createdAt.$lte = endOfDay(endDate);
+        }
+
+        const [byRate, byCategory, totals] = await Promise.all([
+            // GST by rate (gst field is flat per-unit amount, not percentage)
+            Bill.aggregate([
+                { $match: match },
+                { $unwind: "$items" },
+                { $match: { "items.gst": { $gt: 0 } } },
+                {
+                    $group: {
+                        _id: "$items.gst",
+                        taxableAmount: { $sum: "$items.itemTotal" },
+                        taxCollected: { $sum: { $multiply: ["$items.gst", "$items.qty"] } },
+                        itemCount: { $sum: "$items.qty" },
+                    }
+                },
+                { $sort: { _id: 1 } }
+            ]),
+            // GST by category
+            Bill.aggregate([
+                { $match: match },
+                { $unwind: "$items" },
+                { $match: { "items.gst": { $gt: 0 } } },
+                {
+                    $group: {
+                        _id: "$items.category",
+                        taxableAmount: { $sum: "$items.itemTotal" },
+                        taxCollected: { $sum: { $multiply: ["$items.gst", "$items.qty"] } },
+                    }
+                },
+                { $sort: { taxCollected: -1 } }
+            ]),
+            // Overall totals
+            Bill.aggregate([
+                { $match: match },
+                {
+                    $group: {
+                        _id: null,
+                        totalTax: { $sum: "$totalTax" },
+                        totalRevenue: { $sum: "$total" },
+                        billCount: { $sum: 1 },
+                    }
+                }
+            ])
+        ]);
+
+        const overall = totals[0] || { totalTax: 0, totalRevenue: 0, billCount: 0 };
+
+        res.json({
+            byRate: byRate.map(r => ({
+                gstRate: r._id,
+                taxableAmount: Math.round(r.taxableAmount * 100) / 100,
+                taxCollected: Math.round(r.taxCollected * 100) / 100,
+                itemCount: r.itemCount,
+            })),
+            byCategory: byCategory.map(r => ({
+                category: r._id || "Uncategorized",
+                taxableAmount: Math.round(r.taxableAmount * 100) / 100,
+                taxCollected: Math.round(r.taxCollected * 100) / 100,
+            })),
+            summary: {
+                totalTaxCollected: overall.totalTax,
+                totalRevenue: overall.totalRevenue,
+                taxPercentage: overall.totalRevenue > 0 ? Math.round((overall.totalTax / overall.totalRevenue) * 10000) / 100 : 0,
+                billCount: overall.billCount,
+            }
+        });
+    } catch (error) {
+        console.error("Error fetching tax report:", error);
+        res.status(500).json({ message: "Failed to fetch tax report" });
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CUSTOMER SALES REPORT
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const customerSalesReport = async (req, res) => {
+    try {
+        const { startDate, endDate, limit = 50 } = req.query;
+        const match = {
+            business: new mongoose.Types.ObjectId(req.user.businessId),
+            status: "completed",
+            type: "sale",
+            customer: { $ne: null },
+        };
+        if (startDate || endDate) {
+            match.createdAt = {};
+            if (startDate) match.createdAt.$gte = new Date(startDate);
+            if (endDate) match.createdAt.$lte = endOfDay(endDate);
+        }
+
+        const results = await Bill.aggregate([
+            { $match: match },
+            {
+                $group: {
+                    _id: "$customer",
+                    customerName: { $first: "$customerName" },
+                    customerPhone: { $first: "$customerPhone" },
+                    totalSpent: { $sum: "$total" },
+                    totalPaid: { $sum: "$amountPaid" },
+                    totalDiscount: { $sum: "$totalDiscount" },
+                    totalRefunded: { $sum: "$totalRefunded" },
+                    billCount: { $sum: 1 },
+                    totalItems: { $sum: { $size: "$items" } },
+                    totalQty: { $sum: "$totalQty" },
+                    lastPurchase: { $max: "$createdAt" },
+                    avgOrderValue: { $avg: "$total" },
+                }
+            },
+            {
+                $project: {
+                    customerId: "$_id",
+                    customerName: 1,
+                    customerPhone: 1,
+                    totalSpent: 1,
+                    totalPaid: 1,
+                    balance: { $subtract: ["$totalSpent", "$totalPaid"] },
+                    totalDiscount: 1,
+                    totalRefunded: 1,
+                    billCount: 1,
+                    totalItems: 1,
+                    totalQty: 1,
+                    lastPurchase: 1,
+                    avgOrderValue: { $round: ["$avgOrderValue", 2] },
+                }
+            },
+            { $sort: { totalSpent: -1 } },
+            { $limit: Number(limit) }
+        ]);
+
+        const { customer: _ignore, ...walkInMatch } = match;
+        const walkInStats = await Bill.aggregate([
+            { $match: { ...walkInMatch, customer: null } },
+            {
+                $group: {
+                    _id: null,
+                    totalSpent: { $sum: "$total" },
+                    billCount: { $sum: 1 },
+                }
+            }
+        ]);
+
+        res.json({
+            customers: results,
+            walkIn: walkInStats[0] || { totalSpent: 0, billCount: 0 },
+        });
+    } catch (error) {
+        console.error("Error fetching customer sales report:", error);
+        res.status(500).json({ message: "Failed to fetch customer sales report" });
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// DISCOUNT ANALYSIS
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const discountReport = async (req, res) => {
+    try {
+        const { startDate, endDate } = req.query;
+        const match = {
+            business: new mongoose.Types.ObjectId(req.user.businessId),
+            status: "completed",
+            type: "sale",
+            totalDiscount: { $gt: 0 },
+        };
+        if (startDate || endDate) {
+            match.createdAt = {};
+            if (startDate) match.createdAt.$gte = new Date(startDate);
+            if (endDate) match.createdAt.$lte = endOfDay(endDate);
+        }
+
+        const [summary, byCashier, byMode, recentDiscounted] = await Promise.all([
+            // Overall discount summary
+            Bill.aggregate([
+                { $match: match },
+                {
+                    $group: {
+                        _id: null,
+                        totalDiscount: { $sum: "$totalDiscount" },
+                        totalItemDiscount: { $sum: "$totalItemDiscount" },
+                        totalBillDiscount: { $sum: "$billDiscountAmount" },
+                        grossRevenue: { $sum: { $add: ["$total", "$totalDiscount"] } },
+                        discountedBills: { $sum: 1 },
+                    }
+                }
+            ]),
+            // Discounts by cashier
+            Bill.aggregate([
+                { $match: match },
+                {
+                    $group: {
+                        _id: { cashier: "$cashier", cashierName: "$cashierName" },
+                        totalDiscount: { $sum: "$totalDiscount" },
+                        billCount: { $sum: 1 },
+                        avgDiscount: { $avg: "$totalDiscount" },
+                    }
+                },
+                {
+                    $project: {
+                        cashierName: { $ifNull: ["$_id.cashierName", "Unknown"] },
+                        totalDiscount: 1,
+                        billCount: 1,
+                        avgDiscount: { $round: ["$avgDiscount", 2] },
+                    }
+                },
+                { $sort: { totalDiscount: -1 } }
+            ]),
+            // Discounts by mode (item vs bill)
+            Bill.aggregate([
+                { $match: match },
+                {
+                    $group: {
+                        _id: "$discountMode",
+                        totalDiscount: { $sum: "$totalDiscount" },
+                        billCount: { $sum: 1 },
+                    }
+                }
+            ]),
+            // Recent discounted bills
+            Bill.find(match)
+                .sort({ createdAt: -1 })
+                .limit(20)
+                .select("billNumber cashierName totalDiscount discountMode total createdAt")
+                .lean()
         ]);
 
         const stats = summary[0] || {
-            totalBilled: 0,
-            totalPaid: 0,
-            totalRefunded: 0,
-            billCount: 0,
-            returnsCount: 0,
+            totalDiscount: 0, totalItemDiscount: 0, totalBillDiscount: 0,
+            grossRevenue: 0, discountedBills: 0,
         };
 
         res.json({
-            bills,
             summary: {
-                totalBilled: stats.totalBilled,
-                totalPaid: stats.totalPaid,
-                balance: stats.totalBilled - stats.totalPaid,
-                totalRefunded: stats.totalRefunded,
-                billCount: stats.billCount,
-                returnsCount: stats.returnsCount,
+                ...stats,
+                discountPercentage: stats.grossRevenue > 0
+                    ? Math.round((stats.totalDiscount / stats.grossRevenue) * 10000) / 100 : 0,
             },
+            byCashier,
+            byMode,
+            recentDiscounted,
         });
     } catch (error) {
-        console.error("Error fetching customer ledger:", error);
-        res.status(500).json({ message: "Failed to fetch customer ledger" });
+        console.error("Error fetching discount report:", error);
+        res.status(500).json({ message: "Failed to fetch discount report" });
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// RETURN RATE ANALYSIS
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const returnAnalysis = async (req, res) => {
+    try {
+        const { startDate, endDate } = req.query;
+        const match = {
+            business: new mongoose.Types.ObjectId(req.user.businessId),
+            status: "completed",
+            type: "sale",
+        };
+        if (startDate || endDate) {
+            match.createdAt = {};
+            if (startDate) match.createdAt.$gte = new Date(startDate);
+            if (endDate) match.createdAt.$lte = endOfDay(endDate);
+        }
+
+        const [byProduct, byReason, overall] = await Promise.all([
+            // Return rate by product
+            Bill.aggregate([
+                { $match: { ...match, "returns.0": { $exists: true } } },
+                { $unwind: "$returns" },
+                { $unwind: "$returns.items" },
+                {
+                    $group: {
+                        _id: { product: { $ifNull: ["$returns.items.product", "$returns.items.name"] }, name: "$returns.items.name" },
+                        returnedQty: { $sum: "$returns.items.quantity" },
+                        refundAmount: { $sum: "$returns.items.refundAmount" },
+                        returnCount: { $sum: 1 },
+                    }
+                },
+                {
+                    $project: {
+                        productName: "$_id.name",
+                        productId: {
+                            $cond: [{ $eq: [{ $type: "$_id.product" }, "objectId"] }, "$_id.product", null]
+                        },
+                        returnedQty: 1,
+                        refundAmount: 1,
+                        returnCount: 1,
+                    }
+                },
+                { $sort: { returnedQty: -1 } },
+                { $limit: 20 }
+            ]),
+            // Return reasons
+            Bill.aggregate([
+                { $match: { ...match, "returns.0": { $exists: true } } },
+                { $unwind: "$returns" },
+                { $unwind: "$returns.items" },
+                {
+                    $group: {
+                        _id: "$returns.items.reason",
+                        count: { $sum: 1 },
+                        totalQty: { $sum: "$returns.items.quantity" },
+                        totalRefund: { $sum: "$returns.items.refundAmount" },
+                    }
+                },
+                { $sort: { count: -1 } }
+            ]),
+            // Overall return stats
+            Bill.aggregate([
+                { $match: match },
+                {
+                    $group: {
+                        _id: null,
+                        totalBills: { $sum: 1 },
+                        billsWithReturns: { $sum: { $cond: [{ $gt: [{ $size: { $ifNull: ["$returns", []] } }, 0] }, 1, 0] } },
+                        totalRevenue: { $sum: "$total" },
+                        totalRefunded: { $sum: "$totalRefunded" },
+                    }
+                }
+            ])
+        ]);
+
+        const stats = overall[0] || { totalBills: 0, billsWithReturns: 0, totalRevenue: 0, totalRefunded: 0 };
+
+        res.json({
+            byProduct,
+            byReason,
+            summary: {
+                totalBills: stats.totalBills,
+                billsWithReturns: stats.billsWithReturns,
+                returnRate: stats.totalBills > 0 ? Math.round((stats.billsWithReturns / stats.totalBills) * 10000) / 100 : 0,
+                totalRefunded: stats.totalRefunded,
+                refundPercentage: stats.totalRevenue > 0 ? Math.round((stats.totalRefunded / stats.totalRevenue) * 10000) / 100 : 0,
+            }
+        });
+    } catch (error) {
+        console.error("Error fetching return analysis:", error);
+        res.status(500).json({ message: "Failed to fetch return analysis" });
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// DAILY/WEEKLY/MONTHLY BREAKDOWN
+// ═══════════════════════════════════════════════════════════════════════════
+
+export const salesTimeline = async (req, res) => {
+    try {
+        const { startDate, endDate, groupBy = "day" } = req.query;
+        const match = {
+            business: new mongoose.Types.ObjectId(req.user.businessId),
+            status: "completed",
+            type: "sale",
+        };
+
+        if (startDate || endDate) {
+            match.createdAt = {};
+            if (startDate) match.createdAt.$gte = new Date(startDate);
+            if (endDate) match.createdAt.$lte = endOfDay(endDate);
+        }
+
+        let dateGroup;
+        if (groupBy === "month") {
+            dateGroup = { year: { $year: "$createdAt" }, month: { $month: "$createdAt" } };
+        } else if (groupBy === "week") {
+            dateGroup = { year: { $isoWeekYear: "$createdAt" }, week: { $isoWeek: "$createdAt" } };
+        } else {
+            dateGroup = { year: { $year: "$createdAt" }, month: { $month: "$createdAt" }, day: { $dayOfMonth: "$createdAt" } };
+        }
+
+        const results = await Bill.aggregate([
+            { $match: match },
+            {
+                $group: {
+                    _id: dateGroup,
+                    totalSales: { $sum: "$total" },
+                    totalDiscount: { $sum: "$totalDiscount" },
+                    totalRefunded: { $sum: "$totalRefunded" },
+                    totalProfit: { $sum: "$netProfit" },
+                    billCount: { $sum: 1 },
+                    totalItems: { $sum: { $size: "$items" } },
+                    totalQty: { $sum: "$totalQty" },
+                }
+            },
+            { $sort: { "_id.year": 1, "_id.month": 1, "_id.week": 1, "_id.day": 1 } }
+        ]);
+
+        const timeline = results.map(r => {
+            let label;
+            if (groupBy === "month") label = `${r._id.year}-${String(r._id.month).padStart(2, "0")}`;
+            else if (groupBy === "week") label = `${r._id.year}-W${String(r._id.week).padStart(2, "0")}`;
+            else label = `${r._id.year}-${String(r._id.month).padStart(2, "0")}-${String(r._id.day).padStart(2, "0")}`;
+
+            return {
+                period: label,
+                totalSales: r.totalSales,
+                totalDiscount: r.totalDiscount,
+                totalRefunded: r.totalRefunded,
+                netSales: r.totalSales - r.totalRefunded,
+                totalProfit: r.totalProfit,
+                billCount: r.billCount,
+                totalItems: r.totalItems,
+                totalQty: r.totalQty,
+                avgOrderValue: r.billCount > 0 ? Math.round((r.totalSales / r.billCount) * 100) / 100 : 0,
+            };
+        });
+
+        res.json({ timeline, groupBy });
+    } catch (error) {
+        console.error("Error fetching sales timeline:", error);
+        res.status(500).json({ message: "Failed to fetch sales timeline" });
     }
 };

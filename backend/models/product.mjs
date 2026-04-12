@@ -72,7 +72,10 @@ const productSchema = new Schema(
 );
 
 // Compound index for unique barcode per business
-productSchema.index({ barcode: 1, business: 1 }, { unique: true, sparse: true });
+productSchema.index(
+    { barcode: 1, business: 1 },
+    { unique: true, partialFilterExpression: { barcode: { $gt: "" } } }
+);
 // Compound index for unique SKU per business
 productSchema.index({ sku: 1, business: 1 }, { unique: true, sparse: true });
 // Index for quick name search

@@ -23,6 +23,25 @@ const customerSchema = new mongoose.Schema({
         trim: true,
         default: ""
     },
+    notes: {
+        type: String,
+        default: ''
+    },
+
+    // Credit terms
+    creditDays: {
+        type: Number,
+        default: 0
+    },
+    creditLimit: {
+        type: Number,
+        default: 0
+    },
+
+    isActive: {
+        type: Boolean,
+        default: true
+    },
     business: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'Business',
@@ -44,6 +63,7 @@ const customerSchema = new mongoose.Schema({
 customerSchema.index({ phone: 1, business: 1 }, { unique: true });
 // Quick lookup for customers with outstanding balance
 customerSchema.index({ business: 1, balance: 1 });
+customerSchema.index({ business: 1, isActive: 1 });
 
 const Customer = mongoose.model('Customer', customerSchema);
 export default Customer;

@@ -1,10 +1,12 @@
 import express from 'express';
+import { validate } from '../middleware/validate.mjs';
+import { registerBusinessSchema, updateBusinessSchema } from '../middleware/validationSchemas.mjs';
 import { registerBusiness, getBusinessById, updateBusiness } from '../controllers/business.mjs';
 
 const businessRouter = express.Router();
 
 // Public route - register new business (no auth required)
-businessRouter.post('/register', registerBusiness);
+businessRouter.post('/register', validate(registerBusinessSchema), registerBusiness);
 
 // Note: GET /:id and PATCH /:id require auth.
 // Auth is applied via jwtAuth in index.mjs for routes that need it.
@@ -46,6 +48,6 @@ const requireAuth = (req, res, next) => {
 
 // Protected routes - require authentication
 businessRouter.get('/:id', requireAuth, getBusinessById);
-businessRouter.patch('/:id', requireAuth, updateBusiness);
+businessRouter.patch('/:id', requireAuth, validate(updateBusinessSchema), updateBusiness);
 
 export default businessRouter;

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useBusiness } from '../context/BusinessContext';
-import api from '../services/api';
+import { getReceipts } from '../services/api/receipts';
+import { getExpenses as getApprovedExpenses } from '../services/api/expenses';
 import {
     FiTrendingUp,
     FiTrendingDown,
@@ -109,7 +110,7 @@ const Reports = () => {
             const { startDate, prevStartDate, prevEndDate, now } = getDateRange();
 
             // Fetch receipts
-            const receiptsRes = await api.get('/receipt', { params: { limit: 10000 } });
+            const receiptsRes = await getReceipts({ limit: 10000 });
             const allReceipts = Array.isArray(receiptsRes.data) ? receiptsRes.data : (receiptsRes.data?.receipts || []);
 
             // Current period receipts
@@ -158,7 +159,7 @@ const Reports = () => {
             const grossProfit = netRevenue - cogs;
 
             // Fetch expenses
-            const expensesRes = await api.get('/expense', { params: { status: 'approved' } });
+            const expensesRes = await getApprovedExpenses({ status: 'approved' });
             const allExpenses = Array.isArray(expensesRes.data)
                 ? expensesRes.data
                 : expensesRes.data?.expenses || [];

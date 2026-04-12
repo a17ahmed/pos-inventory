@@ -1,32 +1,51 @@
 import express from 'express';
+import { validate } from '../middleware/validate.mjs';
+import {
+    createProductSchema,
+    updateProductSchema,
+    updateStockSchema,
+    bulkUpdateStockSchema,
+} from '../middleware/validationSchemas.mjs';
 
 import {
     createProduct,
     getAllProducts,
     getProduct,
     getProductByBarcode,
+    getProductBySku,
     updateProduct,
     deleteProduct,
     updateStock,
     bulkUpdateStock,
     getCategories,
     getLowStockProducts,
-    generateBarcode
+    generateBarcode,
+    generateSku,
+    getStockMovements,
+    getInventoryValuation,
+    getDeadStock,
+    getStockReport
 } from '../controllers/product.mjs';
 
 const productRouter = express.Router();
 
 productRouter
-    .post('/', createProduct)
+    .post('/', validate(createProductSchema), createProduct)
     .get('/', getAllProducts)
     .get('/categories', getCategories)
     .get('/low-stock', getLowStockProducts)
+    .get('/stock-movements', getStockMovements)
+    .get('/report/valuation', getInventoryValuation)
+    .get('/report/dead-stock', getDeadStock)
+    .get('/report/stock', getStockReport)
     .get('/generate-barcode', generateBarcode)
+    .get('/generate-sku', generateSku)
     .get('/barcode/:barcode', getProductByBarcode)
+    .get('/sku/:sku', getProductBySku)
     .get('/:id', getProduct)
-    .patch('/:id', updateProduct)
-    .patch('/:id/stock', updateStock)
-    .post('/bulk-stock', bulkUpdateStock)
+    .patch('/:id', validate(updateProductSchema), updateProduct)
+    .patch('/:id/stock', validate(updateStockSchema), updateStock)
+    .post('/bulk-stock', validate(bulkUpdateStockSchema), bulkUpdateStock)
     .delete('/:id', deleteProduct);
 
 export default productRouter;

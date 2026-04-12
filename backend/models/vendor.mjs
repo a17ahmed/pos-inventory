@@ -44,6 +44,16 @@ const vendorSchema = new Schema(
                 default: ''
             }
         },
+        // Credit terms
+        creditDays: {
+            type: Number,
+            default: 0
+        },
+        creditLimit: {
+            type: Number,
+            default: 0
+        },
+
         notes: {
             type: String,
             default: ''

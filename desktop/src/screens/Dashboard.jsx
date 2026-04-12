@@ -2,7 +2,12 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useBusiness } from '../context/BusinessContext';
 import { useAuth } from '../context/AuthContext';
-import api from '../services/api';
+import { getProducts } from '../services/api/products';
+import { getReceiptStats, getTopProducts } from '../services/api/receipts';
+import { createBill } from '../services/api/bills';
+import { searchCustomers } from '../services/api/customers';
+import { getExpenses as getApprovedExpenses } from '../services/api/expenses';
+import { getPendingBills, createPendingBill, resumePendingBill, cancelPendingBill as cancelPendingBillApi } from '../services/api/pendingBills';
 import {
     FiTrendingUp,
     FiShoppingCart,
@@ -23,6 +28,10 @@ import {
     FiList,
     FiPhone,
     FiUser,
+    FiUserCheck,
+    FiPercent,
+    FiChevronUp,
+    FiChevronDown,
 } from 'react-icons/fi';
 import {
     LineChart,
@@ -43,7 +52,28 @@ const EmployeeDashboard = () => {
 
     // Billing state
     const [billingActive, setBillingActive] = useState(true); // Always show billing view
-    const [bills, setBills] = useState([{ id: '1', name: 'Bill 1', items: [], createdAt: new Date().toISOString() }]);
+    const [bills, setBills] = useState([{
+        id: '1',
+        name: 'Bill 1',
+        items: [],
+        createdAt: new Date().toISOString(),
+        customer: null,
+        customerName: '',
+        customerPhone: '',
+        billDiscountAmount: 0,
+        billDiscountReason: '',
+    }]);
+
+    // Cart item inline expansion (for profit details + per-item discount)
+    const [expandedItemId, setExpandedItemId] = useState(null);
+
+    // Customer picker
+    const [showCustomerPicker, setShowCustomerPicker] = useState(false);
+    const [customerQuery, setCustomerQuery] = useState('');
+    const [customerResults, setCustomerResults] = useState([]);
+    const [searchingCustomers, setSearchingCustomers] = useState(false);
+    const [showWalkInConfirm, setShowWalkInConfirm] = useState(false);
+    const customerPickerRef = useRef(null);
     const [activeBillId, setActiveBillId] = useState('1');
     const [billCounter, setBillCounter] = useState(1);
 
@@ -68,6 +98,7 @@ const EmployeeDashboard = () => {
     const [showPaymentModal, setShowPaymentModal] = useState(false);
     const [paymentMethod, setPaymentMethod] = useState('cash');
     const [cashGiven, setCashGiven] = useState('');
+    const [creditPaidNow, setCreditPaidNow] = useState('');
     const [processing, setProcessing] = useState(false);
     const [showSuccess, setShowSuccess] = useState(false);
     const [successData, setSuccessData] = useState(null);
@@ -95,6 +126,43 @@ const EmployeeDashboard = () => {
         loadSavedBills();
         checkForPendingBillToLoad();
     }, []);
+
+    // Debounced customer search
+    useEffect(() => {
+        if (!showCustomerPicker) return;
+        const q = customerQuery.trim();
+        if (q.length === 0) {
+            setCustomerResults([]);
+            return;
+        }
+        setSearchingCustomers(true);
+        const timer = setTimeout(async () => {
+            try {
+                const res = await searchCustomers(q);
+                setCustomerResults(res.data || []);
+            } catch (err) {
+                console.error('Customer search error:', err);
+                setCustomerResults([]);
+                const msg = err?.response?.data?.message || 'Failed to search customers';
+                showToast(msg);
+            } finally {
+                setSearchingCustomers(false);
+            }
+        }, 250);
+        return () => clearTimeout(timer);
+    }, [customerQuery, showCustomerPicker]);
+
+    // Close customer picker on outside click
+    useEffect(() => {
+        if (!showCustomerPicker) return;
+        const handler = (e) => {
+            if (customerPickerRef.current && !customerPickerRef.current.contains(e.target)) {
+                setShowCustomerPicker(false);
+            }
+        };
+        document.addEventListener('mousedown', handler);
+        return () => document.removeEventListener('mousedown', handler);
+    }, [showCustomerPicker]);
 
     const showToast = (message, icon = '✦') => {
         setToast({ show: true, message, icon });
@@ -208,7 +276,7 @@ const EmployeeDashboard = () => {
     const loadData = async () => {
         try {
             // Load products
-            const productRes = await api.get('/product');
+            const productRes = await getProducts();
             const productList = productRes.data || [];
             setProducts(productList);
 
@@ -227,7 +295,7 @@ const EmployeeDashboard = () => {
 
             // Load top products
             try {
-                const topRes = await api.get('/receipt/top-products?limit=12');
+                const topRes = await getTopProducts(12);
                 if (topRes.data && topRes.data.length > 0) {
                     setTopProducts(topRes.data);
                 } else {
@@ -252,7 +320,7 @@ const EmployeeDashboard = () => {
             }
 
             // Load today's stats for sidebar revenue bar
-            const todayStatsRes = await api.get('/receipt/stats', { params: { filter: 'today' } });
+            const todayStatsRes = await getReceiptStats({ filter: 'today' });
             setTodayStats({
                 totalSales: todayStatsRes.data?.grossRevenue || 0,
                 transactions: todayStatsRes.data?.totalOrders || 0,
@@ -314,7 +382,12 @@ const EmployeeDashboard = () => {
             id: Date.now().toString(),
             name: `Bill ${newNum}`,
             items: [],
-            createdAt: new Date().toISOString()
+            createdAt: new Date().toISOString(),
+            customer: null,
+            customerName: '',
+            customerPhone: '',
+            billDiscountAmount: 0,
+            billDiscountReason: '',
         };
         setBillCounter(newNum);
         const updated = [...bills, newBill];
@@ -334,7 +407,17 @@ const EmployeeDashboard = () => {
     const deleteBill = (billId) => {
         if (bills.length === 1) {
             // Reset to empty bill
-            const newBill = { id: Date.now().toString(), name: 'Bill 1', items: [], createdAt: new Date().toISOString() };
+            const newBill = {
+                id: Date.now().toString(),
+                name: 'Bill 1',
+                items: [],
+                createdAt: new Date().toISOString(),
+                customer: null,
+                customerName: '',
+                customerPhone: '',
+                billDiscountAmount: 0,
+                billDiscountReason: '',
+            };
             setBills([newBill]);
             setActiveBillId(newBill.id);
             setBillCounter(1);
@@ -384,8 +467,10 @@ const EmployeeDashboard = () => {
                                 _id: product._id,
                                 name: product.name,
                                 price: product.sellingPrice || product.price,
+                                costPrice: product.costPrice || 0,
                                 gst: product.gst || 0,
                                 qty: 1,
+                                discountAmount: 0,
                                 emoji: emoji,
                                 barcode: product.barcode,
                                 trackStock: product.trackStock,
@@ -442,16 +527,120 @@ const EmployeeDashboard = () => {
         });
     };
 
+    // Mirrors the backend pre-save math so the UI stays consistent with what the
+    // server will compute. Returns subtotal (after item discounts), tax, bill
+    // discount, total, totalCost, billProfit.
     const getBillTotal = (bill) => {
-        const subtotal = bill.items.reduce((sum, item) => sum + (item.price * item.qty), 0);
-        const tax = bill.items.reduce((sum, item) => sum + ((item.price * (item.gst || 0) / 100) * item.qty), 0);
-        return { subtotal, tax, total: subtotal + tax };
+        const gross = bill.items.reduce((sum, item) => sum + (item.price * item.qty), 0);
+        const itemDiscounts = bill.items.reduce((sum, item) => sum + (Number(item.discountAmount) || 0), 0);
+        const subtotal = bill.items.reduce(
+            (sum, item) => sum + (item.price * item.qty - (Number(item.discountAmount) || 0)),
+            0
+        );
+        const tax = bill.items.reduce(
+            (sum, item) => sum + (item.price * (item.gst || 0) / 100) * item.qty,
+            0
+        );
+        const beforeBillDiscount = subtotal + tax;
+        const billDiscount = Math.min(Number(bill.billDiscountAmount) || 0, beforeBillDiscount);
+        const total = Math.max(0, beforeBillDiscount - billDiscount);
+        const totalCost = bill.items.reduce((sum, item) => sum + (Number(item.costPrice) || 0) * item.qty, 0);
+        const billProfit = total - totalCost;
+        return {
+            gross,
+            itemDiscounts,
+            subtotal,
+            tax,
+            billDiscount,
+            total,
+            totalCost,
+            billProfit,
+        };
+    };
+
+    // Compute per-item profit mirroring the backend (distributes bill-level
+    // discount proportionally so profit stays correct either way).
+    const getItemProfit = (bill, item) => {
+        const lineGross = item.price * item.qty;
+        const itemDiscount = Number(item.discountAmount) || 0;
+        const lineAfterItemDiscount = Math.max(0, lineGross - itemDiscount);
+        const totals = getBillTotal(bill);
+        let share = 0;
+        if (totals.billDiscount > 0 && totals.subtotal > 0) {
+            share = (lineAfterItemDiscount / totals.subtotal) * totals.billDiscount;
+        }
+        const effectivePrice = (lineAfterItemDiscount - share) / (item.qty || 1);
+        const profit = (effectivePrice - (Number(item.costPrice) || 0)) * item.qty;
+        const margin = effectivePrice > 0 ? ((effectivePrice - (item.costPrice || 0)) / effectivePrice) * 100 : 0;
+        return { effectivePrice, profit, margin, lineAfterItemDiscount };
+    };
+
+    // ── Mutators for new POS features ────────────────────────────
+    const updateActiveBill = (updater) => {
+        setBills((prev) => {
+            const updated = prev.map((b) => (b.id === activeBillId ? updater(b) : b));
+            saveBills(updated, activeBillId);
+            return updated;
+        });
+    };
+
+    const setItemDiscount = (itemId, amount) => {
+        const amt = Math.max(0, Number(amount) || 0);
+        updateActiveBill((bill) => {
+            // Enforce: clearing bill-level discount when any item has a discount.
+            const newItems = bill.items.map((i) => (i._id === itemId ? { ...i, discountAmount: amt } : i));
+            const anyItemHasDiscount = newItems.some((i) => (Number(i.discountAmount) || 0) > 0);
+            return {
+                ...bill,
+                items: newItems,
+                billDiscountAmount: anyItemHasDiscount ? 0 : bill.billDiscountAmount,
+                billDiscountReason: anyItemHasDiscount ? '' : bill.billDiscountReason,
+            };
+        });
+    };
+
+    const setBillDiscount = (amount, reason) => {
+        const amt = Math.max(0, Number(amount) || 0);
+        updateActiveBill((bill) => {
+            // Enforce: clear all per-item discounts if setting a bill discount.
+            const clearedItems =
+                amt > 0
+                    ? bill.items.map((i) => ({ ...i, discountAmount: 0 }))
+                    : bill.items;
+            return {
+                ...bill,
+                items: clearedItems,
+                billDiscountAmount: amt,
+                billDiscountReason: reason ?? bill.billDiscountReason,
+            };
+        });
+    };
+
+    const attachCustomer = (customer) => {
+        updateActiveBill((bill) => ({
+            ...bill,
+            customer: customer?._id || null,
+            customerName: customer?.name || '',
+            customerPhone: customer?.phone || '',
+        }));
+        setShowCustomerPicker(false);
+        setCustomerQuery('');
+        setCustomerResults([]);
+    };
+
+    const detachCustomer = () => {
+        updateActiveBill((bill) => ({
+            ...bill,
+            customer: null,
+            customerName: '',
+            customerPhone: '',
+        }));
     };
 
     const fetchPendingBills = async () => {
         setLoadingPending(true);
         try {
-            const res = await api.get('/pending-bill');
+            const res = await getPendingBills();
             setPendingBills((res.data || []).filter(b => b.status === 'pending'));
         } catch (error) {
             console.error('Error fetching pending bills:', error);
@@ -460,12 +649,25 @@ const EmployeeDashboard = () => {
         }
     };
 
-    const handleCheckout = async () => {
+    const handleCheckout = async (confirmedWalkIn = false) => {
         const bill = bills.find(b => b.id === activeBillId);
         if (!bill || bill.items.length === 0) return;
 
-        const { subtotal, tax, total } = getBillTotal(bill);
-        const currentEffectiveTotal = resumedBillInfo ? resumedBillInfo.remainingAmount : total;
+        // Credit requires a real customer
+        if (paymentMethod === 'credit' && !bill.customer) {
+            showToast('Attach a customer to use credit');
+            return;
+        }
+
+        // Walk-in guard: if no customer attached, confirm before proceeding
+        // (credit mode already requires a customer, so it never trips this)
+        if (!confirmedWalkIn && !bill.customer) {
+            setShowWalkInConfirm(true);
+            return;
+        }
+
+        const totals = getBillTotal(bill);
+        const currentEffectiveTotal = resumedBillInfo ? resumedBillInfo.remainingAmount : totals.total;
         const currentChangeAmount = Math.max(0, parseFloat(cashGiven || 0) - currentEffectiveTotal);
 
         if (paymentMethod === 'cash' && parseFloat(cashGiven || 0) < currentEffectiveTotal) {
@@ -474,36 +676,51 @@ const EmployeeDashboard = () => {
         }
 
         const idempotencyKey = `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+        let amountPaid;
+        if (paymentMethod === 'cash') {
+            amountPaid = Math.min(parseFloat(cashGiven || 0), currentEffectiveTotal);
+        } else if (paymentMethod === 'credit') {
+            amountPaid = Math.max(0, Math.min(parseFloat(creditPaidNow || 0), currentEffectiveTotal));
+        } else {
+            amountPaid = currentEffectiveTotal;
+        }
+
+        // Backend only accepts: cash | card | online | store_credit
+        // Map UI-only methods to backend-valid ones
+        const backendPaymentMethod =
+            paymentMethod === 'upi' ? 'online' :
+            paymentMethod === 'credit' ? 'cash' :
+            paymentMethod;
 
         setProcessing(true);
         try {
-            const response = await api.post('/receipt', {
-                items: bill.items.map(item => ({
-                    productId: item._id,
+            const response = await createBill({
+                items: bill.items.map((item) => ({
+                    product: item._id,
                     name: item.name,
-                    price: item.price,
+                    barcode: item.barcode || '',
+                    category: item.category || 'General',
                     qty: item.qty,
+                    price: item.price,
+                    costPrice: Number(item.costPrice) || 0,
                     gst: item.gst || 0,
+                    discountAmount: Number(item.discountAmount) || 0,
                 })),
-                subtotal,
-                tax,
-                totalBill: total,
-                paymentMethod,
-                cashGiven: parseFloat(cashGiven || 0),
-                changeAmount: currentChangeAmount,
-                customerName: resumedBillInfo?.customerName || 'Walk-in Customer',
-                customerPhone: resumedBillInfo?.customerPhone || '',
-                cashierName: user?.name || 'Admin',
-                employeeId: user?._id,
+                status: 'completed',
+                customer: bill.customer || null,
+                customerName: bill.customerName || resumedBillInfo?.customerName || 'Walk-in',
+                customerPhone: bill.customerPhone || resumedBillInfo?.customerPhone || '',
+                billDiscountAmount: Number(bill.billDiscountAmount) || 0,
+                billDiscountReason: bill.billDiscountReason || '',
+                paymentMethod: backendPaymentMethod,
+                amountPaid,
+                cashGiven: paymentMethod === 'cash' ? parseFloat(cashGiven || 0) : 0,
                 idempotencyKey,
-                pendingBillRef: pendingBillId || null,
-                amountPreviouslyPaid: resumedBillInfo?.amountPaid || 0,
-                amountDue: currentEffectiveTotal,
             });
 
             if (pendingBillId) {
                 try {
-                    await api.patch(`/pending-bill/${pendingBillId}/resume`);
+                    await resumePendingBill(pendingBillId);
                 } catch (err) {
                     console.warn('Failed to mark pending bill:', err);
                 }
@@ -518,7 +735,17 @@ const EmployeeDashboard = () => {
                 setActiveBillId(updated[0]?.id);
                 saveBills(updated, updated[0]?.id);
             } else {
-                const newBill = { id: Date.now().toString(), name: 'Bill 1', items: [], createdAt: new Date().toISOString() };
+                const newBill = {
+                    id: Date.now().toString(),
+                    name: 'Bill 1',
+                    items: [],
+                    createdAt: new Date().toISOString(),
+                    customer: null,
+                    customerName: '',
+                    customerPhone: '',
+                    billDiscountAmount: 0,
+                    billDiscountReason: '',
+                };
                 setBills([newBill]);
                 setActiveBillId(newBill.id);
                 setBillCounter(1);
@@ -533,6 +760,9 @@ const EmployeeDashboard = () => {
                 paymentMethod,
             });
             setShowPaymentModal(false);
+            setCashGiven('');
+            setCreditPaidNow('');
+            setPaymentMethod('cash');
             setShowSuccess(true);
 
             loadData();
@@ -562,7 +792,7 @@ const EmployeeDashboard = () => {
 
         setHoldingBill(true);
         try {
-            await api.post('/pending-bill', {
+            await createPendingBill({
                 billName: bill.name,
                 items: bill.items.map((item) => ({
                     _id: item._id,
@@ -588,7 +818,17 @@ const EmployeeDashboard = () => {
                 setActiveBillId(updated[0]?.id);
                 saveBills(updated, updated[0]?.id);
             } else {
-                const newBill = { id: Date.now().toString(), name: 'Bill 1', items: [], createdAt: new Date().toISOString() };
+                const newBill = {
+                    id: Date.now().toString(),
+                    name: 'Bill 1',
+                    items: [],
+                    createdAt: new Date().toISOString(),
+                    customer: null,
+                    customerName: '',
+                    customerPhone: '',
+                    billDiscountAmount: 0,
+                    billDiscountReason: '',
+                };
                 setBills([newBill]);
                 setActiveBillId(newBill.id);
                 saveBills([newBill], newBill.id);
@@ -608,7 +848,7 @@ const EmployeeDashboard = () => {
 
     const loadPendingBill = async (bill) => {
         try {
-            await api.patch(`/pending-bill/${bill._id}/resume`);
+            await resumePendingBill(bill._id);
         } catch (err) {
             console.warn('Failed to mark pending bill:', err);
         }
@@ -643,10 +883,10 @@ const EmployeeDashboard = () => {
         showToast('📋 Bill loaded');
     };
 
-    const cancelPendingBill = async (billId) => {
+    const handleCancelPendingBill = async (billId) => {
         if (!window.confirm('Cancel this pending bill?')) return;
         try {
-            await api.patch(`/pending-bill/${billId}/cancel`);
+            await cancelPendingBillApi(billId);
             setPendingBills((prev) => prev.filter((b) => b._id !== billId));
             showToast('Bill cancelled');
         } catch (error) {
@@ -771,7 +1011,7 @@ const EmployeeDashboard = () => {
     return (
         <div className="h-full flex flex-col bg-slate-50 dark:bg-d-bg animate-fade-slide-up">
             {/* Topbar */}
-            <div className="flex items-center gap-4 px-6 py-3 border-b border-slate-200 dark:border-d-border bg-white/70 dark:bg-[rgba(11,14,26,0.7)] backdrop-blur-xl flex-shrink-0">
+            <div className="relative z-40 flex items-center gap-4 px-6 py-3 border-b border-slate-200 dark:border-d-border bg-white/70 dark:bg-[rgba(11,14,26,0.7)] backdrop-blur-xl flex-shrink-0">
                 {/* Live Badge */}
                 <div className="flex items-center gap-2 bg-emerald-50 dark:bg-[rgba(52,232,161,0.08)] border border-emerald-200 dark:border-[rgba(52,232,161,0.2)] rounded-full px-3 py-1.5">
                     <div className="w-2 h-2 rounded-full bg-emerald-500 dark:bg-d-green animate-live-pulse" />
@@ -787,8 +1027,100 @@ const EmployeeDashboard = () => {
                     <span>{todayStats.transactions} sales today</span>
                 </div>
 
+                {/* Customer Picker */}
+                <div className="relative ml-auto" ref={customerPickerRef}>
+                    {activeBill?.customer ? (
+                        <button
+                            onClick={() => setShowCustomerPicker((o) => !o)}
+                            className="flex items-center gap-2 px-3 py-2 rounded-lg border border-slate-200 dark:border-d-border bg-white dark:bg-d-glass text-[13px] hover:border-amber-300 dark:hover:border-d-border-hover transition-all"
+                        >
+                            <div className="w-6 h-6 rounded-full bg-emerald-100 dark:bg-[rgba(52,232,161,0.15)] flex items-center justify-center">
+                                <FiUserCheck className="text-emerald-600 dark:text-d-green" size={12} />
+                            </div>
+                            <div className="leading-tight text-left">
+                                <div className="font-medium text-slate-800 dark:text-d-text">{activeBill.customerName}</div>
+                                {activeBill.customerPhone && (
+                                    <div className="text-[10px] text-slate-400 dark:text-d-faint">{activeBill.customerPhone}</div>
+                                )}
+                            </div>
+                            <span
+                                role="button"
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    detachCustomer();
+                                }}
+                                className="ml-1 w-5 h-5 rounded-full flex items-center justify-center text-slate-400 dark:text-d-faint hover:bg-red-50 dark:hover:bg-[rgba(255,107,107,0.12)] hover:text-red-500 cursor-pointer"
+                                title="Remove customer"
+                            >
+                                <FiX size={12} />
+                            </span>
+                        </button>
+                    ) : (
+                        <button
+                            onClick={() => setShowCustomerPicker((o) => !o)}
+                            className="flex items-center gap-2 px-3 py-2 rounded-lg border border-amber-400 dark:border-d-accent bg-amber-50/40 dark:bg-[rgba(255,185,50,0.05)] text-[13px] text-amber-700 dark:text-d-accent hover:bg-amber-50 dark:hover:bg-[rgba(255,185,50,0.1)] transition-all"
+                        >
+                            <FiUser size={13} />
+                            <span className="font-semibold">Select Customer</span>
+                            <FiChevronDown size={12} />
+                        </button>
+                    )}
+                    {showCustomerPicker && (
+                        <>
+                            <div className="absolute right-0 top-full mt-2 w-[340px] bg-white dark:bg-d-elevated border border-slate-200 dark:border-d-border rounded-2xl shadow-2xl z-[100] overflow-hidden">
+                                <div className="p-3 border-b border-slate-200 dark:border-d-border">
+                                    <input
+                                        type="text"
+                                        autoFocus
+                                        value={customerQuery}
+                                        onChange={(e) => setCustomerQuery(e.target.value)}
+                                        placeholder="Search by name or phone…"
+                                        className="w-full px-3 py-2 bg-slate-50 dark:bg-d-bg border border-slate-200 dark:border-d-border rounded-lg text-sm text-slate-800 dark:text-d-text placeholder-slate-400 dark:placeholder-d-faint focus:outline-none focus:border-amber-300 dark:focus:border-d-border-hover"
+                                    />
+                                </div>
+                                <div className="max-h-[260px] overflow-y-auto dark-scrollbar">
+                                    {searchingCustomers && (
+                                        <div className="px-4 py-3 text-xs text-slate-400 dark:text-d-faint">Searching…</div>
+                                    )}
+                                    {!searchingCustomers && customerQuery && customerResults.length === 0 && (
+                                        <div className="px-4 py-3 text-xs text-slate-400 dark:text-d-faint">No customers found</div>
+                                    )}
+                                    {!searchingCustomers && !customerQuery && (
+                                        <div className="px-4 py-3 text-xs text-slate-400 dark:text-d-faint">Type to search customers</div>
+                                    )}
+                                    {customerResults.map((c) => (
+                                        <button
+                                            key={c._id}
+                                            onClick={() => attachCustomer(c)}
+                                            className="w-full px-4 py-3 text-left hover:bg-slate-50 dark:hover:bg-d-glass border-t border-slate-100 dark:border-[rgba(255,255,255,0.04)] flex items-center justify-between"
+                                        >
+                                            <div>
+                                                <div className="text-sm font-medium text-slate-800 dark:text-d-text">{c.name}</div>
+                                                <div className="text-[11px] text-slate-500 dark:text-d-muted">{c.phone}</div>
+                                            </div>
+                                            {c.balance > 0 && (
+                                                <span className="text-[11px] font-medium text-red-500 dark:text-d-red">
+                                                    Due {formatCurrency(c.balance)}
+                                                </span>
+                                            )}
+                                        </button>
+                                    ))}
+                                </div>
+                                <div className="p-2 border-t border-slate-200 dark:border-d-border bg-slate-50 dark:bg-d-bg">
+                                    <button
+                                        onClick={() => attachCustomer(null)}
+                                        className="w-full px-3 py-2 text-xs text-slate-500 dark:text-d-muted hover:text-slate-700 dark:hover:text-d-text"
+                                    >
+                                        Use Walk-in customer
+                                    </button>
+                                </div>
+                            </div>
+                        </>
+                    )}
+                </div>
+
                 {/* Bill Tabs */}
-                <div className="flex items-center gap-2 ml-auto">
+                <div className="flex items-center gap-2">
                     {bills.map((bill) => {
                         const isActive = bill.id === activeBillId;
                         const itemCount = bill.items.reduce((sum, item) => sum + item.qty, 0);
@@ -923,44 +1255,109 @@ const EmployeeDashboard = () => {
                             </div>
                         ) : (
                             <div className="space-y-3">
-                                {activeBill?.items.map((item) => (
-                                    <div
-                                        key={item._id}
-                                        className="flex items-center gap-4 bg-white dark:bg-d-elevated border border-slate-200 dark:border-d-border rounded-2xl p-4 animate-pop-in hover:border-amber-400 dark:hover:border-d-border-hover hover:translate-x-0.5 hover:bg-amber-50 dark:hover:bg-[rgba(255,210,100,0.03)] transition-all duration-200 relative overflow-hidden shadow-sm"
-                                        style={{ '--item-color': item.category === 'Drinks' ? '#5b9cf6' : '#f59e0b' }}
-                                    >
-                                        <div className="absolute top-0 left-0 bottom-0 w-[3px] rounded-l bg-[var(--item-color,#f59e0b)] dark:bg-[var(--item-color,#ffd264)]" />
-                                        <span className="text-2xl flex-shrink-0">{item.emoji || '📦'}</span>
-                                        <div className="flex-1 min-w-0">
-                                            <h4 className="font-medium text-[14px] text-slate-800 dark:text-d-text truncate">{item.name}</h4>
-                                            <p className="text-[11px] text-slate-500 dark:text-d-muted tracking-wide">{item._id?.slice(-4)} · {formatCurrency(item.price)} each</p>
-                                        </div>
-                                        <div className="flex items-center gap-2">
-                                            <button
-                                                onClick={() => updateQuantity(item._id, -1)}
-                                                className="w-7 h-7 rounded-lg border border-slate-300 dark:border-d-border bg-slate-100 dark:bg-d-glass text-slate-700 dark:text-d-text flex items-center justify-center hover:border-amber-400 dark:hover:border-d-border-hover hover:text-amber-600 dark:hover:text-d-accent hover:bg-amber-100 dark:hover:bg-[rgba(255,210,100,0.12)] transition-all"
-                                            >
-                                                −
-                                            </button>
-                                            <span className="font-display font-semibold text-base min-w-[22px] text-center text-slate-800 dark:text-d-text">{item.qty}</span>
-                                            <button
-                                                onClick={() => updateQuantity(item._id, 1)}
-                                                className="w-7 h-7 rounded-lg border border-slate-300 dark:border-d-border bg-slate-100 dark:bg-d-glass text-slate-700 dark:text-d-text flex items-center justify-center hover:border-amber-400 dark:hover:border-d-border-hover hover:text-amber-600 dark:hover:text-d-accent hover:bg-amber-100 dark:hover:bg-[rgba(255,210,100,0.12)] transition-all"
-                                            >
-                                                +
-                                            </button>
-                                        </div>
-                                        <span className="font-display text-[15px] font-semibold text-amber-600 dark:text-d-accent min-w-[80px] text-right">
-                                            {formatCurrency(item.price * item.qty)}
-                                        </span>
-                                        <button
-                                            onClick={() => removeItem(item._id)}
-                                            className="text-slate-400 dark:text-d-faint hover:text-red-500 dark:hover:text-d-red transition-colors text-lg p-1"
+                                {activeBill?.items.map((item) => {
+                                    const expanded = expandedItemId === item._id;
+                                    const profitInfo = getItemProfit(activeBill, item);
+                                    const hasItemDiscount = (Number(item.discountAmount) || 0) > 0;
+                                    const hasBillDiscount = (Number(activeBill.billDiscountAmount) || 0) > 0;
+                                    return (
+                                        <div
+                                            key={item._id}
+                                            className="bg-white dark:bg-d-elevated border border-slate-200 dark:border-d-border rounded-2xl animate-pop-in hover:border-amber-400 dark:hover:border-d-border-hover hover:bg-amber-50 dark:hover:bg-[rgba(255,210,100,0.03)] transition-all duration-200 relative overflow-hidden shadow-sm"
+                                            style={{ '--item-color': item.category === 'Drinks' ? '#5b9cf6' : '#f59e0b' }}
                                         >
-                                            ✕
-                                        </button>
-                                    </div>
-                                ))}
+                                            <div className="absolute top-0 left-0 bottom-0 w-[3px] rounded-l bg-[var(--item-color,#f59e0b)] dark:bg-[var(--item-color,#ffd264)]" />
+                                            <div
+                                                onClick={() => setExpandedItemId(expanded ? null : item._id)}
+                                                className="flex items-center gap-4 p-4 cursor-pointer"
+                                            >
+                                                <span className="text-2xl flex-shrink-0">{item.emoji || '📦'}</span>
+                                                <div className="flex-1 min-w-0">
+                                                    <h4 className="font-medium text-[14px] text-slate-800 dark:text-d-text truncate">{item.name}</h4>
+                                                    <p className="text-[11px] text-slate-500 dark:text-d-muted tracking-wide">
+                                                        {item._id?.slice(-4)} · {formatCurrency(item.price)} each
+                                                        {hasItemDiscount && (
+                                                            <span className="ml-2 text-emerald-500 dark:text-d-green">
+                                                                − {formatCurrency(item.discountAmount)} off
+                                                            </span>
+                                                        )}
+                                                    </p>
+                                                </div>
+                                                <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                                                    <button
+                                                        onClick={() => updateQuantity(item._id, -1)}
+                                                        className="w-7 h-7 rounded-lg border border-slate-300 dark:border-d-border bg-slate-100 dark:bg-d-glass text-slate-700 dark:text-d-text flex items-center justify-center hover:border-amber-400 dark:hover:border-d-border-hover hover:text-amber-600 dark:hover:text-d-accent hover:bg-amber-100 dark:hover:bg-[rgba(255,210,100,0.12)] transition-all"
+                                                    >
+                                                        −
+                                                    </button>
+                                                    <span className="font-display font-semibold text-base min-w-[22px] text-center text-slate-800 dark:text-d-text">{item.qty}</span>
+                                                    <button
+                                                        onClick={() => updateQuantity(item._id, 1)}
+                                                        className="w-7 h-7 rounded-lg border border-slate-300 dark:border-d-border bg-slate-100 dark:bg-d-glass text-slate-700 dark:text-d-text flex items-center justify-center hover:border-amber-400 dark:hover:border-d-border-hover hover:text-amber-600 dark:hover:text-d-accent hover:bg-amber-100 dark:hover:bg-[rgba(255,210,100,0.12)] transition-all"
+                                                    >
+                                                        +
+                                                    </button>
+                                                </div>
+                                                <span className="font-display text-[15px] font-semibold text-amber-600 dark:text-d-accent min-w-[80px] text-right">
+                                                    {formatCurrency(profitInfo.lineAfterItemDiscount)}
+                                                </span>
+                                                <div onClick={(e) => e.stopPropagation()}>
+                                                    <button
+                                                        onClick={() => removeItem(item._id)}
+                                                        className="text-slate-400 dark:text-d-faint hover:text-red-500 dark:hover:text-d-red transition-colors text-lg p-1"
+                                                    >
+                                                        ✕
+                                                    </button>
+                                                </div>
+                                            </div>
+
+                                            {expanded && (
+                                                <div className="px-4 pb-4 pt-0 border-t border-slate-100 dark:border-[rgba(255,255,255,0.05)] animate-fade-slide-up">
+                                                    <div className="grid grid-cols-4 gap-3 mt-3 mb-3">
+                                                        <div>
+                                                            <div className="text-[10px] uppercase tracking-wide text-slate-400 dark:text-d-faint">Cost</div>
+                                                            <div className="text-[13px] font-semibold text-slate-700 dark:text-d-text">{formatCurrency(item.costPrice || 0)}</div>
+                                                        </div>
+                                                        <div>
+                                                            <div className="text-[10px] uppercase tracking-wide text-slate-400 dark:text-d-faint">Sell</div>
+                                                            <div className="text-[13px] font-semibold text-slate-700 dark:text-d-text">{formatCurrency(item.price)}</div>
+                                                        </div>
+                                                        <div>
+                                                            <div className="text-[10px] uppercase tracking-wide text-slate-400 dark:text-d-faint">Profit</div>
+                                                            <div className={`text-[13px] font-semibold ${profitInfo.profit >= 0 ? 'text-emerald-500 dark:text-d-green' : 'text-red-500 dark:text-d-red'}`}>
+                                                                {formatCurrency(profitInfo.profit)}
+                                                            </div>
+                                                        </div>
+                                                        <div>
+                                                            <div className="text-[10px] uppercase tracking-wide text-slate-400 dark:text-d-faint">Margin</div>
+                                                            <div className={`text-[13px] font-semibold ${profitInfo.margin >= 0 ? 'text-emerald-500 dark:text-d-green' : 'text-red-500 dark:text-d-red'}`}>
+                                                                {profitInfo.margin.toFixed(1)}%
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                    <div className="flex items-center gap-2">
+                                                        <label className="text-[11px] text-slate-500 dark:text-d-muted flex-shrink-0">Discount (Rs)</label>
+                                                        <input
+                                                            type="number"
+                                                            min="0"
+                                                            step="0.01"
+                                                            value={item.discountAmount || ''}
+                                                            onChange={(e) => setItemDiscount(item._id, e.target.value)}
+                                                            disabled={hasBillDiscount}
+                                                            placeholder="0"
+                                                            className="flex-1 px-3 py-2 bg-slate-50 dark:bg-d-bg border border-slate-200 dark:border-d-border rounded-lg text-sm text-slate-800 dark:text-d-text placeholder-slate-400 dark:placeholder-d-faint focus:outline-none focus:border-amber-300 dark:focus:border-d-border-hover disabled:opacity-50 disabled:cursor-not-allowed"
+                                                        />
+                                                        {hasBillDiscount && (
+                                                            <span className="text-[10px] text-slate-400 dark:text-d-faint">
+                                                                Bill-level discount active
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            )}
+                                        </div>
+                                    );
+                                })}
                             </div>
                         )}
                     </div>
@@ -1051,16 +1448,73 @@ const EmployeeDashboard = () => {
                 <div className="flex flex-col gap-2 mb-4">
                     <div className="flex justify-between text-[13px]">
                         <span className="text-slate-500 dark:text-d-muted">Subtotal ({activeItemCount} items)</span>
-                        <span className="font-medium text-slate-700 dark:text-d-text">{formatCurrency(activeTotal.subtotal)}</span>
+                        <span className="font-medium text-slate-700 dark:text-d-text">{formatCurrency(activeTotal.gross)}</span>
                     </div>
-                    <div className="flex justify-between text-[13px]">
-                        <span className="text-slate-500 dark:text-d-muted">Discount</span>
-                        <span className="text-emerald-500 dark:text-d-green">— Rs. 0</span>
+
+                    {activeTotal.itemDiscounts > 0 && (
+                        <div className="flex justify-between text-[13px]">
+                            <span className="text-slate-500 dark:text-d-muted">Item discounts</span>
+                            <span className="text-emerald-500 dark:text-d-green">— {formatCurrency(activeTotal.itemDiscounts)}</span>
+                        </div>
+                    )}
+
+                    {/* Bill-level discount input */}
+                    <div className="flex justify-between items-center text-[13px]">
+                        <div className="flex items-center gap-2 text-slate-500 dark:text-d-muted">
+                            <FiPercent size={12} />
+                            <span>Bill discount</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                            <input
+                                type="number"
+                                min="0"
+                                step="0.01"
+                                value={activeBill?.billDiscountAmount || ''}
+                                onChange={(e) => setBillDiscount(e.target.value, activeBill?.billDiscountReason || '')}
+                                disabled={activeTotal.itemDiscounts > 0 || !activeBill || activeBill.items.length === 0}
+                                placeholder="0"
+                                className="w-20 px-2 py-1 text-right bg-slate-50 dark:bg-d-bg border border-slate-200 dark:border-d-border rounded-lg text-slate-800 dark:text-d-text placeholder-slate-400 dark:placeholder-d-faint focus:outline-none focus:border-amber-300 dark:focus:border-d-border-hover disabled:opacity-50 disabled:cursor-not-allowed"
+                            />
+                            {activeTotal.billDiscount > 0 && (
+                                <span className="text-emerald-500 dark:text-d-green text-[11px] min-w-[55px] text-right">
+                                    — {formatCurrency(activeTotal.billDiscount)}
+                                </span>
+                            )}
+                        </div>
                     </div>
-                    <div className="flex justify-between text-[13px]">
-                        <span className="text-slate-500 dark:text-d-muted">Tax (0%)</span>
-                        <span className="text-slate-700 dark:text-d-text">Rs. 0</span>
-                    </div>
+
+                    {activeTotal.itemDiscounts > 0 && (
+                        <div className="text-[10px] text-slate-400 dark:text-d-faint italic">
+                            Bill discount disabled — clear item discounts to use it
+                        </div>
+                    )}
+
+                    {activeTotal.billDiscount > 0 && (
+                        <input
+                            type="text"
+                            value={activeBill?.billDiscountReason || ''}
+                            onChange={(e) => setBillDiscount(activeBill?.billDiscountAmount || 0, e.target.value)}
+                            placeholder="Discount reason (optional)"
+                            className="px-2 py-1 bg-slate-50 dark:bg-d-bg border border-slate-200 dark:border-d-border rounded-lg text-[11px] text-slate-800 dark:text-d-text placeholder-slate-400 dark:placeholder-d-faint focus:outline-none focus:border-amber-300 dark:focus:border-d-border-hover"
+                        />
+                    )}
+
+                    {activeTotal.tax > 0 && (
+                        <div className="flex justify-between text-[13px]">
+                            <span className="text-slate-500 dark:text-d-muted">Tax</span>
+                            <span className="text-slate-700 dark:text-d-text">{formatCurrency(activeTotal.tax)}</span>
+                        </div>
+                    )}
+
+                    {activeBill && activeBill.items.length > 0 && (
+                        <div className="flex justify-between text-[13px]">
+                            <span className="text-slate-500 dark:text-d-muted">Bill profit</span>
+                            <span className={`font-medium ${activeTotal.billProfit >= 0 ? 'text-emerald-500 dark:text-d-green' : 'text-red-500 dark:text-d-red'}`}>
+                                {formatCurrency(activeTotal.billProfit)}
+                            </span>
+                        </div>
+                    )}
+
                     <div className="flex justify-between items-end pt-3 mt-1 border-t border-slate-200 dark:border-d-border">
                         <span className="font-display text-[15px] font-semibold text-slate-800 dark:text-d-text">Total</span>
                         <span className="font-display text-[28px] font-bold text-amber-600 dark:text-d-accent leading-none tracking-tight">{formatCurrency(effectiveTotal)}</span>
@@ -1087,7 +1541,7 @@ const EmployeeDashboard = () => {
                         <span className="text-[10px] opacity-65 font-normal">Ctrl+3</span>
                     </button>
                     <button
-                        onClick={() => { setShowPaymentModal(true); setPaymentMethod('cash'); setCashGiven(''); }}
+                        onClick={() => { setShowPaymentModal(true); setPaymentMethod('cash'); setCashGiven(''); setCreditPaidNow(''); }}
                         disabled={!activeBill || activeBill.items.length === 0}
                         className="flex-[2] py-3.5 px-4 rounded-xl bg-gradient-to-r from-amber-400 to-amber-500 dark:from-d-accent dark:to-d-accent-s text-white dark:text-d-card font-bold text-[14px] flex items-center justify-center gap-2 shadow-md dark:shadow-[0_6px_24px_rgba(255,185,50,0.3)] hover:-translate-y-0.5 hover:shadow-lg dark:hover:shadow-[0_10px_36px_rgba(255,185,50,0.45)] active:translate-y-0 transition-all disabled:opacity-50 disabled:cursor-not-allowed relative overflow-hidden group"
                     >
@@ -1117,27 +1571,71 @@ const EmployeeDashboard = () => {
 
                         <div className="mb-6">
                             <p className="text-sm font-medium text-slate-500 dark:text-d-muted mb-2">Payment Method</p>
-                            <div className="flex gap-2">
+                            <div className="grid grid-cols-4 gap-2">
                                 {[
                                     { id: 'cash', label: 'Cash', icon: FiDollarSign },
                                     { id: 'card', label: 'Card', icon: FiCreditCard },
                                     { id: 'upi', label: 'UPI', icon: FiSmartphone },
-                                ].map((method) => (
-                                    <button
-                                        key={method.id}
-                                        onClick={() => setPaymentMethod(method.id)}
-                                        className={`flex-1 py-3 rounded-xl font-medium flex items-center justify-center gap-2 transition-all ${
-                                            paymentMethod === method.id
-                                                ? 'bg-amber-500 dark:bg-d-accent text-white dark:text-d-card'
-                                                : 'bg-slate-100 dark:bg-[rgba(255,255,255,0.05)] border border-slate-200 dark:border-d-border text-slate-600 dark:text-d-muted hover:bg-slate-200 dark:hover:bg-d-glass-hover'
-                                        }`}
-                                    >
-                                        <method.icon size={18} />
-                                        {method.label}
-                                    </button>
-                                ))}
+                                    { id: 'credit', label: 'Credit', icon: FiUser },
+                                ].map((method) => {
+                                    const creditDisabled = method.id === 'credit' && !activeBill?.customer;
+                                    return (
+                                        <button
+                                            key={method.id}
+                                            onClick={() => !creditDisabled && setPaymentMethod(method.id)}
+                                            disabled={creditDisabled}
+                                            title={creditDisabled ? 'Attach a customer to enable credit' : ''}
+                                            className={`py-3 rounded-xl font-medium flex items-center justify-center gap-1.5 text-sm transition-all ${
+                                                paymentMethod === method.id
+                                                    ? 'bg-amber-500 dark:bg-d-accent text-white dark:text-d-card'
+                                                    : creditDisabled
+                                                        ? 'bg-slate-50 dark:bg-[rgba(255,255,255,0.02)] border border-slate-200 dark:border-d-border text-slate-300 dark:text-d-faint cursor-not-allowed'
+                                                        : 'bg-slate-100 dark:bg-[rgba(255,255,255,0.05)] border border-slate-200 dark:border-d-border text-slate-600 dark:text-d-muted hover:bg-slate-200 dark:hover:bg-d-glass-hover'
+                                            }`}
+                                        >
+                                            <method.icon size={16} />
+                                            {method.label}
+                                        </button>
+                                    );
+                                })}
                             </div>
+                            {paymentMethod === 'credit' && !activeBill?.customer && (
+                                <p className="text-xs text-red-500 dark:text-d-red mt-2">
+                                    Attach a customer first to use credit.
+                                </p>
+                            )}
                         </div>
+
+                        {paymentMethod === 'credit' && activeBill?.customer && (
+                            <div className="mb-6">
+                                <label className="text-sm font-medium text-slate-500 dark:text-d-muted mb-2 block">Amount Paid Now (optional)</label>
+                                <input
+                                    type="number"
+                                    value={creditPaidNow}
+                                    onChange={(e) => setCreditPaidNow(e.target.value)}
+                                    placeholder="0 — leave empty for full credit"
+                                    className="w-full px-4 py-3 bg-slate-50 dark:bg-[rgba(255,255,255,0.05)] border border-slate-200 dark:border-d-border rounded-xl text-lg text-slate-800 dark:text-d-text focus:border-amber-400 dark:focus:border-d-border-hover focus:bg-amber-50 dark:focus:bg-[rgba(255,210,100,0.03)] outline-none transition-all"
+                                />
+                                {(() => {
+                                    const paid = Math.max(0, Math.min(parseFloat(creditPaidNow || 0), effectiveTotal));
+                                    const due = effectiveTotal - paid;
+                                    return (
+                                        <div className="mt-3 p-4 bg-amber-50 dark:bg-[rgba(255,185,50,0.08)] border border-amber-200 dark:border-[rgba(255,185,50,0.2)] rounded-xl space-y-2">
+                                            <div className="flex justify-between text-sm">
+                                                <span className="text-slate-500 dark:text-d-muted">Paid now</span>
+                                                <span className="font-semibold text-slate-800 dark:text-d-text">{formatCurrency(paid)}</span>
+                                            </div>
+                                            <div className="flex justify-between items-center pt-2 border-t border-amber-200 dark:border-[rgba(255,185,50,0.15)]">
+                                                <span className="text-sm text-amber-700 dark:text-d-accent font-medium">
+                                                    Added to {activeBill.customerName}'s balance
+                                                </span>
+                                                <span className="font-display text-xl font-bold text-amber-600 dark:text-d-accent">{formatCurrency(due)}</span>
+                                            </div>
+                                        </div>
+                                    );
+                                })()}
+                            </div>
+                        )}
 
                         {paymentMethod === 'cash' && (
                             <div className="mb-6">
@@ -1175,8 +1673,12 @@ const EmployeeDashboard = () => {
                         )}
 
                         <button
-                            onClick={handleCheckout}
-                            disabled={processing || (paymentMethod === 'cash' && parseFloat(cashGiven || 0) < effectiveTotal)}
+                            onClick={() => handleCheckout()}
+                            disabled={
+                                processing ||
+                                (paymentMethod === 'cash' && parseFloat(cashGiven || 0) < effectiveTotal) ||
+                                (paymentMethod === 'credit' && !activeBill?.customer)
+                            }
                             className="w-full py-4 bg-emerald-500 dark:bg-d-green text-white dark:text-d-card font-bold rounded-xl hover:shadow-[0_4px_20px_rgba(52,232,161,0.3)] transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                         >
                             {processing ? (
@@ -1191,6 +1693,54 @@ const EmployeeDashboard = () => {
                                 </>
                             )}
                         </button>
+                    </div>
+                </div>
+            )}
+
+            {/* Walk-in Confirmation Modal */}
+            {showWalkInConfirm && (
+                <div className="fixed inset-0 bg-black/50 dark:bg-black/70 flex items-center justify-center z-[200] backdrop-blur-sm">
+                    <div className="bg-white dark:bg-d-elevated border border-slate-200 dark:border-[rgba(255,255,255,0.1)] rounded-2xl p-6 w-full max-w-md animate-pop-in shadow-2xl">
+                        <div className="flex items-center gap-3 mb-4">
+                            <div className="w-12 h-12 rounded-full bg-amber-100 dark:bg-[rgba(255,185,50,0.15)] flex items-center justify-center">
+                                <FiUser className="text-amber-600 dark:text-d-accent" size={22} />
+                            </div>
+                            <div>
+                                <h3 className="text-lg font-bold text-slate-800 dark:text-d-text">Walk-in Customer</h3>
+                                <p className="text-xs text-slate-500 dark:text-d-muted">No customer attached to this bill</p>
+                            </div>
+                        </div>
+                        <p className="text-sm text-slate-600 dark:text-d-muted leading-relaxed mb-5">
+                            This bill will <span className="font-semibold text-slate-800 dark:text-d-text">not be added to any customer ledger</span>. You won't be able to track this sale against a specific customer later.
+                            <br /><br />
+                            Are you sure you want to continue?
+                        </p>
+                        <div className="flex flex-col gap-2">
+                            <button
+                                onClick={() => {
+                                    setShowWalkInConfirm(false);
+                                    handleCheckout(true);
+                                }}
+                                className="w-full py-3 bg-emerald-500 dark:bg-d-green text-white dark:text-d-card font-semibold rounded-xl hover:shadow-[0_4px_20px_rgba(52,232,161,0.3)] transition-all"
+                            >
+                                Yes, continue as Walk-in
+                            </button>
+                            <button
+                                onClick={() => {
+                                    setShowWalkInConfirm(false);
+                                    setShowCustomerPicker(true);
+                                }}
+                                className="w-full py-3 border-2 border-amber-400 dark:border-d-accent text-amber-700 dark:text-d-accent font-semibold rounded-xl hover:bg-amber-50 dark:hover:bg-[rgba(255,185,50,0.1)] transition-all"
+                            >
+                                Attach a Customer
+                            </button>
+                            <button
+                                onClick={() => setShowWalkInConfirm(false)}
+                                className="w-full py-2 text-sm text-slate-500 dark:text-d-muted hover:text-slate-700 dark:hover:text-d-text"
+                            >
+                                Cancel
+                            </button>
+                        </div>
                     </div>
                 </div>
             )}
@@ -1321,7 +1871,7 @@ const EmployeeDashboard = () => {
                                             </div>
                                             <div className="flex gap-2">
                                                 <button onClick={() => loadPendingBill(bill)} className="flex-1 py-2 bg-emerald-500 dark:bg-d-green text-white dark:text-d-card rounded-lg hover:shadow-lg font-medium">Load Bill</button>
-                                                <button onClick={() => cancelPendingBill(bill._id)} className="px-4 py-2 bg-red-50 dark:bg-[rgba(255,107,107,0.1)] text-red-500 dark:text-d-red rounded-lg hover:bg-red-100 dark:hover:bg-[rgba(255,107,107,0.2)]">
+                                                <button onClick={() => handleCancelPendingBill(bill._id)} className="px-4 py-2 bg-red-50 dark:bg-[rgba(255,107,107,0.1)] text-red-500 dark:text-d-red rounded-lg hover:bg-red-100 dark:hover:bg-[rgba(255,107,107,0.2)]">
                                                     <FiTrash2 size={18} />
                                                 </button>
                                             </div>
@@ -1411,8 +1961,8 @@ const AdminDashboard = () => {
 
             // Fetch stats + chart data in ONE call
             const [statsRes, expensesRes] = await Promise.all([
-                api.get('/receipt/stats', { params: { filter: timeFilter, chart: 'true' } }),
-                api.get('/expense', { params: { status: 'approved' } }).catch(() => ({ data: [] }))
+                getReceiptStats({ filter: timeFilter, chart: 'true' }),
+                getApprovedExpenses({ status: 'approved' }).catch(() => ({ data: [] }))
             ]);
 
             const backendStats = statsRes.data;

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useBusiness } from '../context/BusinessContext';
 import { useAuth } from '../context/AuthContext';
-import api from '../services/api';
+import { getProducts, createProduct, updateProduct, deleteProduct, generateSku, generateBarcode } from '../services/api/products';
 import {
     FiPlus,
     FiSearch,
@@ -14,6 +14,9 @@ import {
     FiRefreshCw,
     FiGrid,
     FiList,
+    FiZap,
+    FiChevronDown,
+    FiCheck,
 } from 'react-icons/fi';
 
 const Products = () => {
@@ -32,10 +35,14 @@ const Products = () => {
         price: '',
         costPrice: '',
         category: '',
+        sku: '',
         barcode: '',
-        stock: '',
         description: '',
     });
+    const [generatingSku, setGeneratingSku] = useState(false);
+    const [generatingBarcode, setGeneratingBarcode] = useState(false);
+    const [addingNewCategory, setAddingNewCategory] = useState(false);
+    const [categoryDropdownOpen, setCategoryDropdownOpen] = useState(false);
 
     useEffect(() => {
         fetchProducts();
@@ -43,7 +50,7 @@ const Products = () => {
 
     const fetchProducts = async () => {
         try {
-            const res = await api.get('/product');
+            const res = await getProducts();
             setProducts(res.data || []);
             const cats = [...new Set(res.data?.map((p) => p.category).filter(Boolean))];
             setCategories(cats);
@@ -64,6 +71,8 @@ const Products = () => {
     });
 
     const openModal = (product = null) => {
+        setAddingNewCategory(false);
+        setCategoryDropdownOpen(false);
         if (product) {
             setEditingProduct(product);
             setFormData({
@@ -71,8 +80,8 @@ const Products = () => {
                 price: product.sellingPrice || '',
                 costPrice: product.costPrice || '',
                 category: product.category || '',
+                sku: product.sku || '',
                 barcode: product.barcode || '',
-                stock: product.stockQuantity ?? product.stock ?? '',
                 description: product.description || '',
             });
         } else {
@@ -82,8 +91,8 @@ const Products = () => {
                 price: '',
                 costPrice: '',
                 category: '',
+                sku: '',
                 barcode: '',
-                stock: '',
                 description: '',
             });
         }
@@ -92,21 +101,36 @@ const Products = () => {
 
     const handleSubmit = async (e) => {
         e.preventDefault();
+        const sellingPrice = Number(formData.price);
+        const costPrice = Number(formData.costPrice) || 0;
+        if (costPrice > sellingPrice) {
+            alert('Cost price cannot be greater than the selling price.');
+            return;
+        }
         try {
             const data = {
                 name: formData.name,
-                sellingPrice: Number(formData.price),
-                costPrice: Number(formData.costPrice) || 0,
-                stockQuantity: Number(formData.stock) || 0,
+                sellingPrice,
+                costPrice,
                 category: formData.category,
+                sku: formData.sku,
                 barcode: formData.barcode,
                 description: formData.description,
             };
 
             if (editingProduct) {
-                await api.patch(`/product/${editingProduct._id}`, data);
+                // Don't overwrite stock on edit — supplies/sales manage it.
+                // SKU/barcode are locked after creation to preserve historical references.
+                const { sku, barcode, ...editableData } = data;
+                await updateProduct(editingProduct._id, editableData);
             } else {
-                await api.post('/product', data);
+                // New products always start at stock 0; supplies will add stock.
+                // If barcode is blank, ask backend to auto-generate one too.
+                await createProduct({
+                    ...data,
+                    stockQuantity: 0,
+                    autoBarcode: !formData.barcode,
+                });
             }
 
             setShowModal(false);
@@ -121,11 +145,37 @@ const Products = () => {
         if (!window.confirm('Are you sure you want to delete this product?')) return;
 
         try {
-            await api.delete(`/product/${productId}`);
+            await deleteProduct(productId);
             fetchProducts();
         } catch (error) {
             console.error('Error deleting product:', error);
             alert('Failed to delete product');
+        }
+    };
+
+    const handleGenerateSku = async () => {
+        setGeneratingSku(true);
+        try {
+            const res = await generateSku();
+            setFormData((prev) => ({ ...prev, sku: res.data.sku }));
+        } catch (error) {
+            console.error('Error generating SKU:', error);
+            alert(error.response?.data?.message || 'Failed to generate SKU');
+        } finally {
+            setGeneratingSku(false);
+        }
+    };
+
+    const handleGenerateBarcode = async () => {
+        setGeneratingBarcode(true);
+        try {
+            const res = await generateBarcode();
+            setFormData((prev) => ({ ...prev, barcode: res.data.barcode }));
+        } catch (error) {
+            console.error('Error generating barcode:', error);
+            alert(error.response?.data?.message || 'Failed to generate barcode');
+        } finally {
+            setGeneratingBarcode(false);
         }
     };
 
@@ -505,48 +555,162 @@ const Products = () => {
                                 </div>
                             </div>
 
-                            <div className="grid grid-cols-2 gap-4">
-                                <div>
-                                    <label className="block text-sm font-medium text-slate-600 dark:text-d-muted mb-2">
-                                        Category
-                                    </label>
+                            <div>
+                                <label className="block text-sm font-medium text-slate-600 dark:text-d-muted mb-2">
+                                    Category
+                                </label>
+                                {addingNewCategory ? (
+                                    <div className="flex gap-2">
+                                        <input
+                                            type="text"
+                                            value={formData.category}
+                                            onChange={(e) => setFormData({ ...formData, category: e.target.value })}
+                                            placeholder="New category name"
+                                            autoFocus
+                                            className="flex-1 px-4 py-3 bg-slate-50 dark:bg-d-bg border border-slate-200 dark:border-d-border rounded-xl text-slate-800 dark:text-d-text placeholder-slate-400 dark:placeholder-d-faint focus:outline-none focus:border-amber-300 dark:focus:border-d-border-hover"
+                                        />
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                setAddingNewCategory(false);
+                                                setFormData({ ...formData, category: '' });
+                                            }}
+                                            className="px-4 py-3 bg-slate-100 dark:bg-d-bg border border-slate-200 dark:border-d-border rounded-xl text-slate-600 dark:text-d-muted hover:bg-slate-200 dark:hover:bg-d-border"
+                                        >
+                                            Cancel
+                                        </button>
+                                    </div>
+                                ) : (
+                                    <div className="relative">
+                                        <button
+                                            type="button"
+                                            onClick={() => setCategoryDropdownOpen((o) => !o)}
+                                            className="w-full px-4 py-3 bg-slate-50 dark:bg-d-bg border border-slate-200 dark:border-d-border rounded-xl text-left text-slate-800 dark:text-d-text focus:outline-none focus:border-amber-300 dark:focus:border-d-border-hover flex items-center justify-between"
+                                        >
+                                            <span className={formData.category ? '' : 'text-slate-400 dark:text-d-faint'}>
+                                                {formData.category ||
+                                                    (categories.length === 0 ? 'No categories yet' : 'Select a category')}
+                                            </span>
+                                            <FiChevronDown
+                                                className={`text-slate-400 dark:text-d-muted transition-transform ${categoryDropdownOpen ? 'rotate-180' : ''}`}
+                                            />
+                                        </button>
+                                        {categoryDropdownOpen && (
+                                            <>
+                                                <div
+                                                    className="fixed inset-0 z-10"
+                                                    onClick={() => setCategoryDropdownOpen(false)}
+                                                />
+                                                <div className="absolute z-20 mt-2 w-full max-h-60 overflow-y-auto bg-white dark:bg-d-card border border-slate-200 dark:border-d-border rounded-xl shadow-lg py-1">
+                                                    {categories.length === 0 && (
+                                                        <div className="px-4 py-2 text-sm text-slate-400 dark:text-d-faint">
+                                                            No categories yet
+                                                        </div>
+                                                    )}
+                                                    {categories.map((cat) => (
+                                                        <button
+                                                            key={cat}
+                                                            type="button"
+                                                            onClick={() => {
+                                                                setFormData({ ...formData, category: cat });
+                                                                setCategoryDropdownOpen(false);
+                                                            }}
+                                                            className="w-full px-4 py-2 text-left text-sm text-slate-700 dark:text-d-text hover:bg-slate-100 dark:hover:bg-d-bg flex items-center justify-between"
+                                                        >
+                                                            <span>{cat}</span>
+                                                            {formData.category === cat && (
+                                                                <FiCheck className="text-amber-500" />
+                                                            )}
+                                                        </button>
+                                                    ))}
+                                                    <div className="border-t border-slate-200 dark:border-d-border my-1" />
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => {
+                                                            setAddingNewCategory(true);
+                                                            setCategoryDropdownOpen(false);
+                                                            setFormData({ ...formData, category: '' });
+                                                        }}
+                                                        className="w-full px-4 py-2 text-left text-sm text-amber-600 dark:text-amber-400 hover:bg-slate-100 dark:hover:bg-d-bg flex items-center gap-2"
+                                                    >
+                                                        <FiPlus /> Add new category
+                                                    </button>
+                                                </div>
+                                            </>
+                                        )}
+                                    </div>
+                                )}
+                                {!editingProduct && (
+                                    <p className="mt-2 text-xs text-slate-500 dark:text-d-muted">
+                                        Stock starts at 0 and is managed automatically when you record supplies.
+                                    </p>
+                                )}
+                            </div>
+
+                            <div>
+                                <label className="block text-sm font-medium text-slate-600 dark:text-d-muted mb-2">
+                                    SKU
+                                </label>
+                                <div className="flex gap-2">
                                     <input
                                         type="text"
-                                        value={formData.category}
-                                        onChange={(e) => setFormData({ ...formData, category: e.target.value })}
-                                        list="categories"
-                                        className="w-full px-4 py-3 bg-slate-50 dark:bg-d-bg border border-slate-200 dark:border-d-border rounded-xl text-slate-800 dark:text-d-text placeholder-slate-400 dark:placeholder-d-faint focus:outline-none focus:border-amber-300 dark:focus:border-d-border-hover"
+                                        value={formData.sku}
+                                        onChange={(e) => setFormData({ ...formData, sku: e.target.value })}
+                                        placeholder="Leave blank to auto-generate"
+                                        readOnly={!!editingProduct}
+                                        className={`flex-1 px-4 py-3 bg-slate-50 dark:bg-d-bg border border-slate-200 dark:border-d-border rounded-xl text-slate-800 dark:text-d-text placeholder-slate-400 dark:placeholder-d-faint font-mono focus:outline-none focus:border-amber-300 dark:focus:border-d-border-hover ${editingProduct ? 'opacity-60 cursor-not-allowed' : ''}`}
                                     />
-                                    <datalist id="categories">
-                                        {categories.map((cat) => (
-                                            <option key={cat} value={cat} />
-                                        ))}
-                                    </datalist>
+                                    {!editingProduct && (
+                                        <button
+                                            type="button"
+                                            onClick={handleGenerateSku}
+                                            disabled={generatingSku}
+                                            className="flex items-center gap-2 px-4 py-3 bg-slate-100 dark:bg-d-glass border border-slate-200 dark:border-d-border rounded-xl text-sm font-medium text-slate-700 dark:text-d-text hover:bg-slate-200 dark:hover:bg-d-glass-hover transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                                            title="Generate unique SKU"
+                                        >
+                                            <FiZap size={14} />
+                                            {generatingSku ? '...' : 'Generate'}
+                                        </button>
+                                    )}
                                 </div>
-                                <div>
-                                    <label className="block text-sm font-medium text-slate-600 dark:text-d-muted mb-2">
-                                        Stock
-                                    </label>
-                                    <input
-                                        type="number"
-                                        value={formData.stock}
-                                        onChange={(e) => setFormData({ ...formData, stock: e.target.value })}
-                                        className="w-full px-4 py-3 bg-slate-50 dark:bg-d-bg border border-slate-200 dark:border-d-border rounded-xl text-slate-800 dark:text-d-text placeholder-slate-400 dark:placeholder-d-faint focus:outline-none focus:border-amber-300 dark:focus:border-d-border-hover"
-                                        min="0"
-                                    />
-                                </div>
+                                {editingProduct && (
+                                    <p className="mt-2 text-xs text-slate-500 dark:text-d-muted">
+                                        SKU is locked after creation to preserve historical references.
+                                    </p>
+                                )}
                             </div>
 
                             <div>
                                 <label className="block text-sm font-medium text-slate-600 dark:text-d-muted mb-2">
                                     Barcode
                                 </label>
-                                <input
-                                    type="text"
-                                    value={formData.barcode}
-                                    onChange={(e) => setFormData({ ...formData, barcode: e.target.value })}
-                                    className="w-full px-4 py-3 bg-d-bg border border-d-border rounded-xl text-d-text placeholder-d-faint font-mono focus:outline-none focus:border-d-border-hover"
-                                />
+                                <div className="flex gap-2">
+                                    <input
+                                        type="text"
+                                        value={formData.barcode}
+                                        onChange={(e) => setFormData({ ...formData, barcode: e.target.value })}
+                                        placeholder="Scan or leave blank"
+                                        readOnly={!!editingProduct}
+                                        className={`flex-1 px-4 py-3 bg-slate-50 dark:bg-d-bg border border-slate-200 dark:border-d-border rounded-xl text-slate-800 dark:text-d-text placeholder-slate-400 dark:placeholder-d-faint font-mono focus:outline-none focus:border-amber-300 dark:focus:border-d-border-hover ${editingProduct ? 'opacity-60 cursor-not-allowed' : ''}`}
+                                    />
+                                    {!editingProduct && (
+                                        <button
+                                            type="button"
+                                            onClick={handleGenerateBarcode}
+                                            disabled={generatingBarcode}
+                                            className="flex items-center gap-2 px-4 py-3 bg-slate-100 dark:bg-d-glass border border-slate-200 dark:border-d-border rounded-xl text-sm font-medium text-slate-700 dark:text-d-text hover:bg-slate-200 dark:hover:bg-d-glass-hover transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                                            title="Generate unique barcode"
+                                        >
+                                            <FiZap size={14} />
+                                            {generatingBarcode ? '...' : 'Generate'}
+                                        </button>
+                                    )}
+                                </div>
+                                {editingProduct && (
+                                    <p className="mt-2 text-xs text-slate-500 dark:text-d-muted">
+                                        Barcode is locked after creation to preserve historical references.
+                                    </p>
+                                )}
                             </div>
 
                             <div className="flex gap-3 pt-4">

@@ -1,10 +1,9 @@
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { FiMail, FiLock, FiEye, FiEyeOff, FiServer, FiUser, FiUsers } from 'react-icons/fi';
-import { getApiBaseUrl, setApiBaseUrl } from '../services/api';
+import { useNavigate, Link } from 'react-router-dom';
+import { FiMail, FiLock, FiEye, FiEyeOff, FiUser, FiUsers, FiUserPlus } from 'react-icons/fi';
 import { useAuth } from '../context/AuthContext';
 import { useBusiness } from '../context/BusinessContext';
-import api from '../services/api';
+import { adminLogin, employeeLogin } from '../services/api/auth';
 
 const Login = () => {
     const navigate = useNavigate();
@@ -22,19 +21,13 @@ const Login = () => {
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
 
-    // Server config
-    const [showServerConfig, setShowServerConfig] = useState(false);
-    const [serverUrl, setServerUrl] = useState(getApiBaseUrl());
 
     const handleAdminLogin = async () => {
         setError('');
         setLoading(true);
 
         try {
-            const response = await api.post('/adminAuth/login', {
-                email,
-                password,
-            });
+            const response = await adminLogin(email, password);
 
             if (response.data.token) {
                 // Clear all old data
@@ -76,10 +69,7 @@ const Login = () => {
         setLoading(true);
 
         try {
-            const response = await api.post('/employeeAuth/login', {
-                employeeId: employeeId.toLowerCase(),
-                password,
-            });
+            const response = await employeeLogin(employeeId.toLowerCase(), password);
 
             if (response.data.token) {
                 // Clear all old data
@@ -132,11 +122,6 @@ const Login = () => {
         } else {
             handleEmployeeLogin();
         }
-    };
-
-    const handleSaveServer = () => {
-        setApiBaseUrl(serverUrl);
-        setShowServerConfig(false);
     };
 
     return (
@@ -287,38 +272,15 @@ const Login = () => {
                         </button>
                     </div>
 
-                    {/* Server config */}
-                    <div className="mt-4">
-                        <button
-                            onClick={() => setShowServerConfig(!showServerConfig)}
-                            className="flex items-center gap-2 text-sm text-slate-500 hover:text-slate-700 transition-colors"
+                    {/* Create Account */}
+                    <div className="mt-4 text-center">
+                        <Link
+                            to="/signup"
+                            className="inline-flex items-center gap-2 text-sm text-indigo-500 hover:text-indigo-700 font-medium transition-colors"
                         >
-                            <FiServer />
-                            Server Configuration
-                        </button>
-
-                        {showServerConfig && (
-                            <div className="mt-4 p-4 bg-slate-50 rounded-xl">
-                                <label className="block text-sm font-medium text-slate-700 mb-2">
-                                    Server URL
-                                </label>
-                                <div className="flex gap-2">
-                                    <input
-                                        type="text"
-                                        value={serverUrl}
-                                        onChange={(e) => setServerUrl(e.target.value)}
-                                        placeholder="http://192.168.100.26:3000"
-                                        className="flex-1 px-4 py-2 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white text-slate-800 placeholder-slate-400"
-                                    />
-                                    <button
-                                        onClick={handleSaveServer}
-                                        className="px-4 py-2 bg-indigo-500 text-white rounded-lg text-sm font-medium hover:bg-indigo-600 transition-colors"
-                                    >
-                                        Save
-                                    </button>
-                                </div>
-                            </div>
-                        )}
+                            <FiUserPlus />
+                            Create Account
+                        </Link>
                     </div>
                 </div>
 

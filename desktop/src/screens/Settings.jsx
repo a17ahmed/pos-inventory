@@ -3,7 +3,6 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useBusiness } from '../context/BusinessContext';
 import { useTheme } from '../context/ThemeContext';
-import { getApiBaseUrl, setApiBaseUrl } from '../services/api';
 import {
     FiUser,
     FiServer,
@@ -35,7 +34,7 @@ const Settings = () => {
     const { isDark, toggleTheme } = useTheme();
 
     const [activeModal, setActiveModal] = useState(null);
-    const [serverUrl, setServerUrl] = useState(getApiBaseUrl());
+    const [serverUrl, setServerUrl] = useState(import.meta.env.VITE_API_URL || 'http://localhost:3000');
 
     const handleLogout = async () => {
         if (window.confirm('Are you sure you want to logout?')) {
@@ -45,9 +44,8 @@ const Settings = () => {
     };
 
     const handleSaveServer = () => {
-        setApiBaseUrl(serverUrl);
         setActiveModal(null);
-        alert('Server URL saved! Please restart the app for changes to take effect.');
+        alert('Server URL is configured via .env file (VITE_API_URL). Restart the app after changing it.');
     };
 
     // Setting item component
@@ -166,7 +164,7 @@ const Settings = () => {
                 <SettingItem
                     icon={FiServer}
                     label="Server Configuration"
-                    value={getApiBaseUrl()}
+                    value={import.meta.env.VITE_API_URL || 'http://localhost:3000'}
                     onClick={() => setActiveModal('server')}
                     color="text-orange-500"
                 />

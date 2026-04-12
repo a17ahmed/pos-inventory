@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useBusiness } from '../context/BusinessContext';
-import api from '../services/api';
+import { getAllReceipts, getReceiptStats, getReceiptsPaginated } from '../services/api/receipts';
 import {
     FiSearch,
     FiFileText,
@@ -59,7 +59,7 @@ const Receipts = () => {
     const fetchAllReceipts = async () => {
         setLoading(true);
         try {
-            const res = await api.get('/receipt?all=true');
+            const res = await getAllReceipts();
             const data = res.data?.receipts || res.data || [];
             setReceipts(Array.isArray(data) ? data : []);
             setHasMore(false);
@@ -73,7 +73,7 @@ const Receipts = () => {
 
     const fetchStats = async () => {
         try {
-            const res = await api.get('/receipt/stats');
+            const res = await getReceiptStats();
             setStats({
                 todaySales: res.data?.todaySales ?? 0,
                 todayOrders: res.data?.todayOrders ?? 0,
@@ -92,7 +92,7 @@ const Receipts = () => {
         }
 
         try {
-            const res = await api.get(`/receipt?page=${pageNum}&limit=30`);
+            const res = await getReceiptsPaginated(pageNum);
 
             // Handle both old (array) and new (object with receipts) response formats
             const data = res.data?.receipts || res.data || [];

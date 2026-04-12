@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useBusiness } from '../context/BusinessContext';
 import { useAuth } from '../context/AuthContext';
-import api from '../services/api';
+import { getPendingBills, resumePendingBill, cancelPendingBill } from '../services/api/pendingBills';
 import {
     FiClock,
     FiUser,
@@ -32,7 +32,7 @@ const Pending = () => {
         setLoading(true);
         setError(null);
         try {
-            const res = await api.get('/pending-bill');
+            const res = await getPendingBills();
             const data = res.data;
             if (Array.isArray(data)) {
                 setPendingBills(data);
@@ -52,7 +52,7 @@ const Pending = () => {
 
     const handleLoadBill = async (bill) => {
         try {
-            await api.patch(`/pending-bill/${bill._id}/resume`);
+            await resumePendingBill(bill._id);
 
             localStorage.setItem('pendingBillToLoad', JSON.stringify({
                 billName: bill.billName,
@@ -77,7 +77,7 @@ const Pending = () => {
         if (!window.confirm('Are you sure you want to cancel this pending bill?')) return;
 
         try {
-            await api.patch(`/pending-bill/${billId}/cancel`);
+            await cancelPendingBill(billId);
             fetchPendingBills();
         } catch (error) {
             console.error('Error cancelling pending bill:', error);

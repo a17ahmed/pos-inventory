@@ -1,5 +1,10 @@
 import express from 'express';
-import { authorize } from '../middleware/rbac.mjs';
+import { validate } from '../middleware/validate.mjs';
+import {
+    createExpenseSchema,
+    updateExpenseSchema,
+    rejectExpenseSchema,
+} from '../middleware/validationSchemas.mjs';
 
 import {
     createExpense,
@@ -19,20 +24,15 @@ expenseRouter.get('/stats', getExpenseStats);
 
 // CRUD endpoints
 expenseRouter
-    // Create expense - admin and manager only
-    .post('/', authorize('admin', 'manager'), createExpense)
-    // List expenses - all authenticated users can view
+    .post('/', validate(createExpenseSchema), createExpense)
     .get('/', getAllExpenses)
-    // Get single expense
     .get('/:id', getExpense)
-    // Update expense - admin and manager only (controller checks pending status)
-    .patch('/:id', authorize('admin', 'manager'), updateExpense)
-    // Delete expense - admin only
-    .delete('/:id', authorize('admin'), deleteExpense);
+    .patch('/:id', validate(updateExpenseSchema), updateExpense)
+    .delete('/:id', deleteExpense);
 
-// Approval endpoints - admin only
+// Approval endpoints
 expenseRouter
-    .post('/:id/approve', authorize('admin'), approveExpense)
-    .post('/:id/reject', authorize('admin'), rejectExpense);
+    .post('/:id/approve', approveExpense)
+    .post('/:id/reject', validate(rejectExpenseSchema), rejectExpense);
 
 export default expenseRouter;

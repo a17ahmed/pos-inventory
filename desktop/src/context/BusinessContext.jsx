@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import api from '../services/api';
+import { getBusinessById } from '../services/api/business';
 
 const BusinessContext = createContext(null);
 
@@ -85,7 +85,9 @@ export const BusinessProvider = ({ children }) => {
 
     const refreshBusiness = async () => {
         try {
-            const response = await api.get('/business/me');
+            const businessId = business?._id || business?.id;
+            if (!businessId) throw new Error('No business ID available');
+            const response = await getBusinessById(businessId);
             const businessData = response.data;
             localStorage.setItem('business', JSON.stringify(businessData));
             setBusiness(businessData);

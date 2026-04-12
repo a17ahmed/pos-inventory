@@ -6,6 +6,8 @@ import { fileURLToPath } from 'url';
 import Admin from '../models/admin.mjs';
 import Employee from '../models/employee.mjs';
 import RefreshToken from '../models/refreshToken.mjs';
+import { validate } from '../middleware/validate.mjs';
+import { refreshTokenSchema, logoutSchema } from '../middleware/validationSchemas.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -17,15 +19,10 @@ const authRouter = express.Router();
  * POST /auth/refresh
  * Exchange a valid refresh token for a new access token + new refresh token (rotation)
  */
-authRouter.post('/refresh', async (req, res) => {
+authRouter.post('/refresh', validate(refreshTokenSchema), async (req, res) => {
     try {
         const { refreshToken } = req.body;
         console.log('[Auth Refresh] Request received');
-
-        if (!refreshToken) {
-            console.log('[Auth Refresh] No refresh token provided');
-            return res.status(400).json({ message: 'Refresh token is required' });
-        }
 
         console.log('[Auth Refresh] Verifying and rotating token...');
         // Verify and rotate (deletes old token, returns user info)
@@ -105,7 +102,7 @@ authRouter.post('/refresh', async (req, res) => {
  * POST /auth/logout
  * Revoke refresh token on logout
  */
-authRouter.post('/logout', async (req, res) => {
+authRouter.post('/logout', validate(logoutSchema), async (req, res) => {
     try {
         console.log('[Auth Logout] Request received');
         const { refreshToken } = req.body;

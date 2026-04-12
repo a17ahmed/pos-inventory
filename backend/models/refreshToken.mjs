@@ -4,7 +4,7 @@ import crypto from 'crypto';
 const refreshTokenSchema = new Schema({
     token: { type: String, required: true, unique: true, index: true },
     user: { type: Schema.Types.ObjectId, required: true }, // admin or employee _id
-    userType: { type: String, enum: ['admin', 'employee', 'counter'], required: true },
+    userType: { type: String, enum: ['admin', 'employee'], required: true },
     businessId: { type: Schema.Types.ObjectId, ref: 'Business', required: true },
     expiresAt: { type: Date, required: true, index: { expireAfterSeconds: 0 } }, // TTL auto-delete
 }, { timestamps: true });

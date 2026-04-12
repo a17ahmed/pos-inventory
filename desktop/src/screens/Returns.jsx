@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useBusiness } from '../context/BusinessContext';
-import { useAuth } from '../context/AuthContext';
-import api from '../services/api';
+import { getTodaySummary, getReturnByReceipt, getReturnProductByBarcode, createReturn } from '../services/api/returns';
+import { searchCustomers, getCustomer } from '../services/api/customers';
 import {
     FiSearch,
     FiX,
@@ -14,12 +14,13 @@ import {
     FiFileText,
     FiRefreshCw,
     FiRotateCcw,
+    FiUser,
 } from 'react-icons/fi';
 
 const RETURN_REASONS = [
     { value: 'defective', label: 'Defective' },
     { value: 'wrong_item', label: 'Wrong Item' },
-    { value: 'customer_changed_mind', label: 'Changed Mind' },
+    { value: 'changed_mind', label: 'Changed Mind' },
     { value: 'expired', label: 'Expired' },
     { value: 'damaged', label: 'Damaged' },
     { value: 'other', label: 'Other' },
@@ -33,7 +34,6 @@ const REFUND_METHODS = [
 
 const Returns = () => {
     const { business } = useBusiness();
-    const { user, isEmployee } = useAuth();
 
     // Return items state
     const [returnItems, setReturnItems] = useState([]);
@@ -44,6 +44,16 @@ const Returns = () => {
     const [billNumber, setBillNumber] = useState('');
     const [linkedBill, setLinkedBill] = useState(null);
     const [loadingBill, setLoadingBill] = useState(false);
+
+    // Customer search
+    const [customerQuery, setCustomerQuery] = useState('');
+    const [customerResults, setCustomerResults] = useState([]);
+    const [selectedCustomer, setSelectedCustomer] = useState(null);
+    const [customerBills, setCustomerBills] = useState([]);
+    const [loadingCustomer, setLoadingCustomer] = useState(false);
+    const [showCustomerDropdown, setShowCustomerDropdown] = useState(false);
+    const customerSearchRef = useRef(null);
+    const searchTimerRef = useRef(null);
 
     // Refund details
     const [refundMethod, setRefundMethod] = useState('cash');
@@ -68,7 +78,7 @@ const Returns = () => {
 
     const loadTodaySummary = async () => {
         try {
-            const response = await api.get('/return/today-summary');
+            const response = await getTodaySummary();
             setTodaySummary(response.data);
         } catch (error) {
             console.error('Error loading summary:', error);
@@ -89,10 +99,10 @@ const Returns = () => {
         setLoadingBill(true);
         setError('');
         try {
-            const response = await api.get(`/return/receipt/${billNumber.trim()}`);
+            const response = await getReturnByReceipt(billNumber.trim());
             setLinkedBill(response.data);
         } catch (error) {
-            if (error.response?.data?.isRefundReceipt) {
+            if (error.response?.data?.isRefundBill) {
                 setError('Cannot return items from a refund receipt');
             } else {
                 setError(error.response?.data?.message || 'Bill not found');
@@ -101,6 +111,75 @@ const Returns = () => {
         } finally {
             setLoadingBill(false);
         }
+    };
+
+    // Customer search — debounced
+    const handleCustomerSearch = (value) => {
+        setCustomerQuery(value);
+        setShowCustomerDropdown(true);
+        if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+        if (!value.trim()) {
+            setCustomerResults([]);
+            return;
+        }
+        searchTimerRef.current = setTimeout(async () => {
+            try {
+                const res = await searchCustomers(value.trim());
+                setCustomerResults(res.data || []);
+            } catch {
+                setCustomerResults([]);
+            }
+        }, 300);
+    };
+
+    // Select customer → load their recent bills
+    const selectCustomer = async (customer) => {
+        setSelectedCustomer(customer);
+        setCustomerQuery(customer.name);
+        setShowCustomerDropdown(false);
+        setCustomerResults([]);
+        setLoadingCustomer(true);
+        try {
+            const res = await getCustomer(customer._id);
+            const bills = (res.data.recentBills || []).filter(
+                (b) => b.status === 'completed' && b.type === 'sale'
+            );
+            setCustomerBills(bills);
+        } catch {
+            setCustomerBills([]);
+            setError('Failed to load customer bills');
+        } finally {
+            setLoadingCustomer(false);
+        }
+    };
+
+    // Pick a bill from the customer's list
+    const selectBillFromCustomer = async (bill) => {
+        setLoadingBill(true);
+        setError('');
+        try {
+            const res = await getReturnByReceipt(String(bill.billNumber));
+            setLinkedBill(res.data);
+            setBillNumber(String(bill.billNumber));
+            setReturnItems([]);
+        } catch (err) {
+            if (err.response?.data?.isRefundBill) {
+                setError('Cannot return items from a refund receipt');
+            } else {
+                setError(err.response?.data?.message || 'Failed to load bill');
+            }
+            setLinkedBill(null);
+        } finally {
+            setLoadingBill(false);
+        }
+    };
+
+    // Clear customer selection
+    const clearCustomer = () => {
+        setSelectedCustomer(null);
+        setCustomerQuery('');
+        setCustomerBills([]);
+        setCustomerResults([]);
     };
 
     // Add item from linked bill
@@ -124,12 +203,13 @@ const Returns = () => {
         } else {
             setReturnItems([...returnItems, {
                 id: Date.now().toString(),
+                itemId: item._id,          // bill item _id — required by processReturn
                 name: item.name,
                 productName: item.name,
                 price: item.price,
                 quantity: 1,
                 maxQty: remainingQty,
-                reason: 'customer_changed_mind',
+                reason: 'changed_mind',
                 fromBill: true
             }]);
         }
@@ -142,7 +222,7 @@ const Returns = () => {
         if (!barcode.trim()) return;
 
         try {
-            const response = await api.get(`/product/barcode/${barcode.trim()}`);
+            const response = await getReturnProductByBarcode(barcode.trim());
             const product = response.data;
 
             if (product) {
@@ -163,7 +243,7 @@ const Returns = () => {
                         barcode: barcode.trim(),
                         price: product.sellingPrice || product.price,
                         quantity: 1,
-                        reason: 'customer_changed_mind',
+                        reason: 'changed_mind',
                         fromBill: false
                     }]);
                 }
@@ -210,34 +290,81 @@ const Returns = () => {
     const totalRefund = returnItems.reduce((sum, item) => sum + (item.price * item.quantity), 0);
     const totalItems = returnItems.reduce((sum, item) => sum + item.quantity, 0);
 
-    // Process return
+    // Process return — two paths:
+    //   1. Linked to an existing bill → POST /bill/:id/return (processReturn schema)
+    //      Server auto-picks refund method (ledger_adjust for customer, cash for walk-in)
+    //   2. Standalone (no bill linked) → POST /bill/returns/standalone
+    //      Client chooses refund method.
     const processReturn = async () => {
         if (returnItems.length === 0) {
             setError('Add items to return');
             return;
         }
 
+        // If a bill is linked, every returned item MUST come from that bill
+        // (so it has an itemId). Block mixed scans to avoid silent drops.
+        if (linkedBill) {
+            const orphan = returnItems.find((i) => !i.itemId);
+            if (orphan) {
+                setError(`"${orphan.name}" is not on bill #${linkedBill.billNumber}. Remove it or clear the linked bill.`);
+                return;
+            }
+        }
+
         setProcessing(true);
         setError('');
         try {
-            const payload = {
-                items: returnItems.map(item => ({
-                    product: item.product,
-                    productName: item.productName || item.name,
-                    barcode: item.barcode,
-                    quantity: item.quantity,
-                    price: item.price,
-                    reason: item.reason
-                })),
-                originalBillNumber: linkedBill?.billNumber?.toString() || billNumber || null,
-                refundMethod,
-                customerName: customerName || linkedBill?.customerName,
-                processedBy: user?.name || (isEmployee ? 'Employee' : 'Admin'),
-                notes
-            };
+            let payload;
+            if (linkedBill) {
+                payload = {
+                    billId: linkedBill._id,
+                    items: returnItems.map((item) => ({
+                        itemId: item.itemId,
+                        quantity: item.quantity,
+                        reason: item.reason,
+                    })),
+                    notes,
+                };
+            } else {
+                payload = {
+                    items: returnItems.map((item) => ({
+                        product: item.product || null,
+                        name: item.productName || item.name,
+                        barcode: item.barcode || '',
+                        qty: item.quantity,
+                        price: item.price,
+                        reason: item.reason,
+                    })),
+                    refundMethod,
+                    customerName: customerName || '',
+                    notes,
+                };
+            }
 
-            const response = await api.post('/return', payload);
-            setReturnResult(response.data);
+            const response = await createReturn(payload);
+            const data = response.data;
+
+            // Normalize — the two endpoints return different shapes
+            if (linkedBill) {
+                // processReturn → { returnNumber, refundAmount, bill }
+                const returnEntry = data.bill?.returns?.slice(-1)[0];
+                setReturnResult({
+                    returnNumber: data.returnNumber,
+                    totalItems: returnItems.reduce((s, i) => s + i.quantity, 0),
+                    refundAmount: data.refundAmount,
+                    refundMethod: returnEntry?.refundMethod || 'ledger_adjust',
+                });
+            } else {
+                // standaloneRefund → { refundBill }
+                const rb = data.refundBill;
+                setReturnResult({
+                    returnNumber: `STANDALONE-${rb?.billNumber || ''}`,
+                    totalItems: returnItems.reduce((s, i) => s + i.quantity, 0),
+                    refundAmount: Math.abs(rb?.total || 0),
+                    refundMethod,
+                });
+            }
+
             setShowSuccess(true);
             loadTodaySummary();
         } catch (error) {
@@ -259,6 +386,7 @@ const Returns = () => {
         setShowSuccess(false);
         setReturnResult(null);
         setError('');
+        clearCustomer();
         if (barcodeInputRef.current) {
             barcodeInputRef.current.focus();
         }
@@ -282,13 +410,118 @@ const Returns = () => {
                 </div>
 
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                    {/* Left Column - Bill Lookup & Barcode */}
+                    {/* Left Column - Customer Search, Bill Lookup & Barcode */}
                     <div className="lg:col-span-2 space-y-6">
+                        {/* Customer Search Section */}
+                        <div className="bg-white dark:bg-d-card rounded-2xl border border-slate-200 dark:border-d-border p-6">
+                            <h3 className="text-lg font-semibold text-slate-800 dark:text-d-heading mb-4 flex items-center gap-2">
+                                <FiUser className="text-d-accent" />
+                                Find Customer
+                            </h3>
+
+                            {selectedCustomer ? (
+                                <div>
+                                    {/* Selected customer badge */}
+                                    <div className="flex items-center justify-between bg-[rgba(255,210,100,0.08)] border border-[rgba(255,210,100,0.2)] rounded-xl px-4 py-3 mb-4">
+                                        <div>
+                                            <span className="font-semibold text-slate-800 dark:text-d-heading">{selectedCustomer.name}</span>
+                                            <span className="text-sm text-slate-500 dark:text-d-muted ml-3">{selectedCustomer.phone}</span>
+                                        </div>
+                                        <button onClick={clearCustomer} className="text-slate-400 hover:text-d-red transition-colors">
+                                            <FiX size={18} />
+                                        </button>
+                                    </div>
+
+                                    {/* Customer's bills */}
+                                    {loadingCustomer ? (
+                                        <div className="flex items-center justify-center py-6 text-slate-500 dark:text-d-muted">
+                                            <FiRefreshCw className="animate-spin mr-2" /> Loading bills...
+                                        </div>
+                                    ) : customerBills.length === 0 ? (
+                                        <p className="text-sm text-slate-500 dark:text-d-muted py-4 text-center">No completed bills found for this customer</p>
+                                    ) : (
+                                        <div>
+                                            <p className="text-xs text-slate-500 dark:text-d-muted mb-2">Select a bill to process return:</p>
+                                            <div className="space-y-2 max-h-60 overflow-y-auto">
+                                                {customerBills.map((bill) => {
+                                                    const itemNames = bill.items?.map(i => i.name).join(', ') || '';
+                                                    const isSelected = linkedBill?._id === bill._id;
+                                                    return (
+                                                        <button
+                                                            key={bill._id}
+                                                            onClick={() => selectBillFromCustomer(bill)}
+                                                            className={`w-full text-left px-4 py-3 rounded-xl border transition-all ${
+                                                                isSelected
+                                                                    ? 'border-d-accent bg-[rgba(255,210,100,0.08)]'
+                                                                    : 'border-slate-200 dark:border-d-border hover:border-d-border-hover bg-slate-50 dark:bg-d-bg'
+                                                            }`}
+                                                        >
+                                                            <div className="flex items-center justify-between mb-1">
+                                                                <span className="font-semibold text-slate-800 dark:text-d-heading text-sm">
+                                                                    Bill #{bill.billNumber}
+                                                                    {isSelected && <FiCheck className="inline ml-2 text-d-accent" size={14} />}
+                                                                </span>
+                                                                <span className="text-xs text-slate-500 dark:text-d-muted">
+                                                                    {new Date(bill.createdAt).toLocaleDateString()}
+                                                                </span>
+                                                            </div>
+                                                            <div className="flex items-center justify-between">
+                                                                <span className="text-xs text-slate-500 dark:text-d-muted truncate max-w-[200px]">{itemNames}</span>
+                                                                <span className="text-xs font-medium text-slate-700 dark:text-d-text">{formatCurrency(bill.total)}</span>
+                                                            </div>
+                                                            {bill.returnStatus !== 'none' && (
+                                                                <span className="text-xs text-d-accent mt-1 inline-block">Has previous returns</span>
+                                                            )}
+                                                        </button>
+                                                    );
+                                                })}
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+                            ) : (
+                                /* Customer search input */
+                                <div className="relative" ref={customerSearchRef}>
+                                    <div className="relative">
+                                        <FiSearch className="absolute left-4 top-1/2 -translate-y-1/2 text-d-faint" />
+                                        <input
+                                            type="text"
+                                            value={customerQuery}
+                                            onChange={(e) => handleCustomerSearch(e.target.value)}
+                                            onFocus={() => customerQuery.trim() && setShowCustomerDropdown(true)}
+                                            onBlur={() => setTimeout(() => setShowCustomerDropdown(false), 200)}
+                                            placeholder="Search by customer name or phone..."
+                                            className="w-full pl-12 pr-4 py-3 bg-slate-50 dark:bg-d-bg border border-slate-200 dark:border-d-border rounded-xl text-slate-700 dark:text-d-text placeholder-d-faint focus:outline-none focus:border-d-border-hover"
+                                        />
+                                    </div>
+                                    {showCustomerDropdown && customerResults.length > 0 && (
+                                        <div className="absolute z-20 mt-2 w-full bg-white dark:bg-d-card border border-slate-200 dark:border-d-border rounded-xl shadow-lg max-h-60 overflow-y-auto">
+                                            {customerResults.map((c) => (
+                                                <button
+                                                    key={c._id}
+                                                    onMouseDown={() => selectCustomer(c)}
+                                                    className="w-full text-left px-4 py-3 hover:bg-slate-50 dark:hover:bg-d-glass transition-colors border-b border-slate-100 dark:border-d-border last:border-0"
+                                                >
+                                                    <span className="font-medium text-slate-800 dark:text-d-heading">{c.name}</span>
+                                                    <span className="text-sm text-slate-500 dark:text-d-muted ml-3">{c.phone}</span>
+                                                    {(c.balance || 0) !== 0 && (
+                                                        <span className={`text-xs ml-2 ${c.balance > 0 ? 'text-d-red' : 'text-d-green'}`}>
+                                                            ({c.balance > 0 ? 'Due' : 'Credit'}: {formatCurrency(c.balance)})
+                                                        </span>
+                                                    )}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+
                         {/* Bill Lookup Section */}
                         <div className="bg-white dark:bg-d-card rounded-2xl border border-slate-200 dark:border-d-border p-6">
                             <h3 className="text-lg font-semibold text-slate-800 dark:text-d-heading mb-4 flex items-center gap-2">
                                 <FiFileText className="text-d-accent" />
-                                Link to Original Bill (Optional)
+                                {selectedCustomer ? 'Or Enter Bill Number' : 'Link to Original Bill (Optional)'}
                             </h3>
                             <div className="flex gap-3">
                                 <div className="relative flex-1">
@@ -471,60 +704,77 @@ const Returns = () => {
 
                     {/* Right Column - Summary & Details */}
                     <div className="space-y-6">
-                        {/* Customer Details */}
-                        <div className="bg-white dark:bg-d-card rounded-2xl border border-slate-200 dark:border-d-border p-6">
-                            <h3 className="text-lg font-semibold text-slate-800 dark:text-d-heading mb-4">
-                                Customer Details
-                            </h3>
-                            <div className="space-y-4">
-                                <div>
-                                    <label className="block text-sm text-slate-500 dark:text-d-muted mb-2">Customer Name (Optional)</label>
-                                    <input
-                                        type="text"
-                                        value={customerName}
-                                        onChange={(e) => setCustomerName(e.target.value)}
-                                        placeholder="Enter customer name..."
-                                        className="w-full px-4 py-3 bg-slate-50 dark:bg-d-bg border border-slate-200 dark:border-d-border rounded-xl text-slate-700 dark:text-d-text placeholder-d-faint focus:outline-none focus:border-d-border-hover"
-                                    />
+                        {/* Customer Details & Refund Method — only for standalone returns */}
+                        {!linkedBill && (
+                            <>
+                                <div className="bg-white dark:bg-d-card rounded-2xl border border-slate-200 dark:border-d-border p-6">
+                                    <h3 className="text-lg font-semibold text-slate-800 dark:text-d-heading mb-4">
+                                        Customer Details
+                                    </h3>
+                                    <div className="space-y-4">
+                                        <div>
+                                            <label className="block text-sm text-slate-500 dark:text-d-muted mb-2">Customer Name (Optional)</label>
+                                            <input
+                                                type="text"
+                                                value={customerName}
+                                                onChange={(e) => setCustomerName(e.target.value)}
+                                                placeholder="Enter customer name..."
+                                                className="w-full px-4 py-3 bg-slate-50 dark:bg-d-bg border border-slate-200 dark:border-d-border rounded-xl text-slate-700 dark:text-d-text placeholder-d-faint focus:outline-none focus:border-d-border-hover"
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="block text-sm text-slate-500 dark:text-d-muted mb-2">Notes (Optional)</label>
+                                            <textarea
+                                                value={notes}
+                                                onChange={(e) => setNotes(e.target.value)}
+                                                placeholder="Add notes..."
+                                                rows={3}
+                                                className="w-full px-4 py-3 bg-slate-50 dark:bg-d-bg border border-slate-200 dark:border-d-border rounded-xl text-slate-700 dark:text-d-text placeholder-d-faint resize-none focus:outline-none focus:border-d-border-hover"
+                                            />
+                                        </div>
+                                    </div>
                                 </div>
-                                <div>
-                                    <label className="block text-sm text-slate-500 dark:text-d-muted mb-2">Notes (Optional)</label>
-                                    <textarea
-                                        value={notes}
-                                        onChange={(e) => setNotes(e.target.value)}
-                                        placeholder="Add notes..."
-                                        rows={3}
-                                        className="w-full px-4 py-3 bg-slate-50 dark:bg-d-bg border border-slate-200 dark:border-d-border rounded-xl text-slate-700 dark:text-d-text placeholder-d-faint resize-none focus:outline-none focus:border-d-border-hover"
-                                    />
-                                </div>
-                            </div>
-                        </div>
 
-                        {/* Refund Method */}
-                        <div className="bg-white dark:bg-d-card rounded-2xl border border-slate-200 dark:border-d-border p-6">
-                            <h3 className="text-lg font-semibold text-slate-800 dark:text-d-heading mb-4">
-                                Refund Method
-                            </h3>
-                            <div className="space-y-3">
-                                {REFUND_METHODS.map((method) => (
-                                    <button
-                                        key={method.value}
-                                        onClick={() => setRefundMethod(method.value)}
-                                        className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${
-                                            refundMethod === method.value
-                                                ? 'bg-gradient-to-r from-d-accent to-d-accent-s text-d-card'
-                                                : 'bg-d-glass text-slate-500 dark:text-d-muted hover:bg-d-glass-hover border border-slate-200 dark:border-d-border'
-                                        }`}
-                                    >
-                                        <span className="text-xl">{method.icon}</span>
-                                        <span className="font-medium">{method.label}</span>
-                                        {refundMethod === method.value && (
-                                            <FiCheck className="ml-auto" size={18} />
-                                        )}
-                                    </button>
-                                ))}
+                                <div className="bg-white dark:bg-d-card rounded-2xl border border-slate-200 dark:border-d-border p-6">
+                                    <h3 className="text-lg font-semibold text-slate-800 dark:text-d-heading mb-4">
+                                        Refund Method
+                                    </h3>
+                                    <div className="space-y-3">
+                                        {REFUND_METHODS.map((method) => (
+                                            <button
+                                                key={method.value}
+                                                onClick={() => setRefundMethod(method.value)}
+                                                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${
+                                                    refundMethod === method.value
+                                                        ? 'bg-gradient-to-r from-d-accent to-d-accent-s text-d-card'
+                                                        : 'bg-d-glass text-slate-500 dark:text-d-muted hover:bg-d-glass-hover border border-slate-200 dark:border-d-border'
+                                                }`}
+                                            >
+                                                <span className="text-xl">{method.icon}</span>
+                                                <span className="font-medium">{method.label}</span>
+                                                {refundMethod === method.value && (
+                                                    <FiCheck className="ml-auto" size={18} />
+                                                )}
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+                            </>
+                        )}
+
+                        {/* Info for linked bill */}
+                        {linkedBill && (
+                            <div className="bg-white dark:bg-d-card rounded-2xl border border-slate-200 dark:border-d-border p-6">
+                                <h3 className="text-lg font-semibold text-slate-800 dark:text-d-heading mb-3">
+                                    Refund Info
+                                </h3>
+                                <p className="text-sm text-slate-500 dark:text-d-muted">
+                                    {linkedBill.customer
+                                        ? 'This is a customer bill. The refund will be applied as a ledger adjustment to their account balance.'
+                                        : 'This is a walk-in bill. A cash refund will be processed.'}
+                                </p>
                             </div>
-                        </div>
+                        )}
 
                         {/* Summary & Process Button */}
                         <div className="bg-white dark:bg-d-card rounded-2xl border border-slate-200 dark:border-d-border p-6">
@@ -606,7 +856,7 @@ const Returns = () => {
                                 </div>
                                 <div className="flex justify-between py-2">
                                     <span className="text-slate-500 dark:text-d-muted">Refund Method</span>
-                                    <span className="font-semibold text-slate-700 dark:text-d-text uppercase">{refundMethod.replace('_', ' ')}</span>
+                                    <span className="font-semibold text-slate-700 dark:text-d-text uppercase">{(returnResult.refundMethod || refundMethod).replace('_', ' ')}</span>
                                 </div>
                             </div>
 

@@ -64,14 +64,20 @@ const ROUTE_PERMISSIONS = {
 
     '/vendor': {
         GET:    { _default: { module: 'vendors', action: 'view' } },
-        POST:   { _default: { module: 'vendors', action: 'create' } },
+        POST:   {
+            _default:  { module: 'vendors', action: 'create' },
+            '/*/pay':  { module: 'vendors', action: 'pay' }
+        },
         PATCH:  { _default: { module: 'vendors', action: 'edit' } },
         DELETE: { _default: { module: 'vendors', action: 'delete' } }
     },
 
     '/supply': {
         GET:   { _default: { module: 'supplies', action: 'view' } },
-        POST:  { _default: { module: 'supplies', action: 'create' } },
+        POST:  {
+            _default:      { module: 'supplies', action: 'create' },
+            '/*/return':   { module: 'supplies', action: 'processReturn' }
+        },
         PATCH: {
             _default:  { module: 'supplies', action: 'edit' },
             '/*/pay':  { module: 'supplies', action: 'recordPayment' }
@@ -91,8 +97,16 @@ const ROUTE_PERMISSIONS = {
     },
 
     '/customer': {
-        GET:  { _default: { module: 'customers', action: 'view' } },
-        POST: { _default: { module: 'customers', action: 'create' } }
+        GET:    {
+            _default:  { module: 'customers', action: 'view' },
+            '/search': { module: 'pos',       action: 'create' }
+        },
+        POST:   {
+            _default:     { module: 'customers', action: 'create' },
+            '/*/collect': { module: 'customers', action: 'edit' }
+        },
+        PATCH:  { _default: { module: 'customers', action: 'edit' } },
+        DELETE: { _default: { module: 'customers', action: 'delete' } }
     },
 
     '/employee': {
@@ -111,15 +125,18 @@ const ROUTE_PERMISSIONS = {
             '/hold':     { module: 'pendingBills', action: 'view' },
             '/returns':  { module: 'returns', action: 'view' },
             '/returns/*': { module: 'returns', action: 'view' },
+            '/returns/receipt/*': { module: 'returns', action: 'view' },
+            '/returns/product/*': { module: 'returns', action: 'create' },
             '/stats':    { module: 'dashboard', action: 'view' },
-            '/top-products': { module: 'reports', action: 'view' }
+            '/top-products': { module: 'reports', action: 'view' },
+            '/report/*': { module: 'reports', action: 'view' }
         },
         POST: {
             _default:     { module: 'pos', action: 'create' },
             '/hold':      { module: 'pendingBills', action: 'create' },
             '/*/return':  { module: 'returns', action: 'create' },
-            '/*/payment': { module: 'pos', action: 'create' },
-            '/*/refund':  { module: 'returns', action: 'create' }
+            '/returns/standalone': { module: 'returns', action: 'standalone' },
+            '/*/payment': { module: 'pos', action: 'create' }
         },
         PATCH: {
             '/*/resume':              { module: 'pendingBills', action: 'resume' },

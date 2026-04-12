@@ -13,11 +13,13 @@ const counterSchema = new mongoose.Schema({
  * @param {string} businessId - Business ID for per-business sequences
  * @returns {Promise<number>} The next sequence number
  */
-counterSchema.statics.getNextSequence = async function (name, businessId) {
+counterSchema.statics.getNextSequence = async function (name, businessId, session = null) {
+    const opts = { new: true, upsert: true };
+    if (session) opts.session = session;
     const counter = await this.findOneAndUpdate(
         { _id: `${name}:${businessId}` },
         { $inc: { seq: 1 } },
-        { new: true, upsert: true }
+        opts
     );
     return counter.seq;
 };

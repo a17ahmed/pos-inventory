@@ -2,6 +2,7 @@ import mongoose, { Schema } from "mongoose";
 
 // Return item schema (embedded in each return entry)
 const returnItemSchema = new Schema({
+    product: { type: Schema.Types.ObjectId, ref: "Product", default: null },
     name: { type: String, required: true },
     quantity: { type: Number, required: true, min: 1 },
     price: { type: Number, required: true },
@@ -22,7 +23,7 @@ const returnEntrySchema = new Schema({
     items: [returnItemSchema],
     refundMethod: {
         type: String,
-        enum: ["cash", "card", "store_credit"],
+        enum: ["cash", "card", "store_credit", "ledger_adjust"],
         default: "cash"
     },
     refundAmount: { type: Number, default: 0 },
@@ -42,6 +43,10 @@ const billItemSchema = new Schema({
     price: { type: Number, required: true },
     costPrice: { type: Number, default: 0 },
     gst: { type: Number, default: 0 },
+
+    // Per-item discount (flat ₹ off, frontend converts % to flat before sending)
+    discountAmount: { type: Number, default: 0 },
+
     itemTotal: { type: Number, default: 0 },
     itemProfit: { type: Number, default: 0 },
     returnedQty: { type: Number, default: 0 },
@@ -87,10 +92,38 @@ const billSchema = new Schema(
             required: true
         },
 
+        // Discount mode: "item" | "bill" | "none" (only one allowed per bill)
+        discountMode: { type: String, enum: ["item", "bill", "none"], default: "none" },
+
+        // Bill-level discount (flat ₹ off, frontend converts % to flat before sending)
+        billDiscountAmount: { type: Number, default: 0 },
+        billDiscountReason: { type: String, default: "" },
+
+        // Discount totals (auto-calculated)
+        totalItemDiscount: { type: Number, default: 0 },
+        totalDiscount: { type: Number, default: 0 },
+
+        // Discount history - tracks who gave what discount and when
+        discountHistory: [{
+            appliedBy: { type: Schema.Types.ObjectId, ref: "Employee", default: null },
+            appliedByName: { type: String, default: "" },
+            appliedAt: { type: Date, default: Date.now },
+            mode: { type: String, enum: ["item", "bill"] },
+            billDiscountAmount: { type: Number, default: 0 },
+            reason: { type: String, default: "" },
+            itemDiscounts: [{
+                name: { type: String },
+                product: { type: Schema.Types.ObjectId, ref: "Product", default: null },
+                qty: { type: Number },
+                discountAmount: { type: Number },
+            }],
+            totalDiscountAmount: { type: Number, default: 0 },
+        }],
+
         // Totals
-        subtotal: { type: Number, default: 0 },
+        subtotal: { type: Number, default: 0 },    // before any discount
         totalTax: { type: Number, default: 0 },
-        total: { type: Number, default: 0 },
+        total: { type: Number, default: 0 },        // after all discounts + tax
         totalQty: { type: Number, default: 0 },
 
         // Profit
@@ -110,7 +143,8 @@ const billSchema = new Schema(
             paidAt: { type: Date, default: Date.now },
             receivedBy: { type: Schema.Types.ObjectId, ref: "Employee", default: null },
             receivedByName: { type: String, default: "" },
-            note: { type: String, default: "" }
+            note: { type: String, default: "" },
+            reference: { type: String, default: "" }
         }],
         amountPaid: { type: Number, default: 0 },
         amountDue: { type: Number, default: 0 },
@@ -127,7 +161,8 @@ const billSchema = new Schema(
 
         // Returns
         returns: [returnEntrySchema],
-        totalRefunded: { type: Number, default: 0 },
+        totalRefunded: { type: Number, default: 0 },        // all refunds (all methods)
+        totalLedgerRefunded: { type: Number, default: 0 },  // ledger_adjust only — reduces amountDue/balance
         netAmount: { type: Number, default: 0 },
 
         // Cancel info (only for cancelled hold bills)
@@ -156,6 +191,7 @@ const billSchema = new Schema(
 billSchema.index({ billNumber: 1, business: 1 }, { unique: true });
 billSchema.index({ business: 1, status: 1 });
 billSchema.index({ business: 1, status: 1, date: 1 });
+billSchema.index({ business: 1, type: 1, status: 1, createdAt: -1 });
 billSchema.index({ cashier: 1, business: 1 });
 billSchema.index({ customer: 1, business: 1 });
 billSchema.index(
@@ -165,50 +201,135 @@ billSchema.index(
 
 // ── Pre-save: calculate all totals and profits ───────────────
 billSchema.pre("save", function (next) {
-    // Item-level calculations
+    // ── Refund bills use negative prices — skip normal discount/profit logic
+    if (this.type === "refund") {
+        for (const item of this.items) {
+            item.itemTotal = item.price * item.qty;
+            item.discountAmount = 0;
+            item.itemProfit = 0;
+            item.remainingQty = item.qty;
+            item.returnedProfit = 0;
+            item.netProfit = 0;
+        }
+        this.subtotal = this.items.reduce((sum, i) => sum + i.itemTotal, 0);
+        this.totalTax = 0;
+        this.totalQty = this.items.reduce((sum, i) => sum + i.qty, 0);
+        this.total = this.subtotal;
+        this.totalDiscount = 0;
+        this.totalItemDiscount = 0;
+        this.billDiscountAmount = 0;
+        this.totalCost = 0;
+        this.billProfit = 0;
+        this.returnedProfit = 0;
+        this.netProfit = 0;
+        this.totalRefunded = 0;
+        this.netAmount = this.total;
+        this.amountPaid = this.payments.reduce((sum, p) => sum + p.amount, 0);
+        this.amountDue = 0;
+        return next();
+    }
+
+    // ── Enforce one discount mode per bill ─────────────────────
+    const hasItemDiscounts = this.items.some((i) => (i.discountAmount || 0) > 0);
+    const hasBillDiscount = (this.billDiscountAmount || 0) > 0;
+
+    if (hasItemDiscounts && hasBillDiscount) {
+        return next(new Error("Cannot apply both item-level and bill-level discounts. Choose one."));
+    }
+
+    // Auto-detect discount mode
+    if (hasItemDiscounts) {
+        this.discountMode = "item";
+        this.billDiscountAmount = 0;
+    } else if (hasBillDiscount) {
+        this.discountMode = "bill";
+        for (const item of this.items) item.discountAmount = 0;
+    } else {
+        this.discountMode = "none";
+    }
+
+    // ── Item-level calculations ────────────────────────────────
     for (const item of this.items) {
-        item.itemTotal = item.price * item.qty;
-        item.itemProfit = (item.price - item.costPrice) * item.qty;
+        const lineGross = item.price * item.qty;
+
+        // Cap discount at line gross (can't discount more than the price)
+        item.discountAmount = Math.min(item.discountAmount || 0, lineGross);
+
+        item.itemTotal = lineGross - item.discountAmount;
+        const effectivePrice = item.itemTotal / (item.qty || 1);
+        item.itemProfit = (effectivePrice - item.costPrice) * item.qty;
         item.remainingQty = item.qty - item.returnedQty;
-        item.returnedProfit = (item.price - item.costPrice) * item.returnedQty;
+        item.returnedProfit = (effectivePrice - item.costPrice) * item.returnedQty;
         item.netProfit = item.itemProfit - item.returnedProfit;
     }
 
-    // Bill-level totals
+    // ── Bill-level totals ──────────────────────────────────────
     this.subtotal = this.items.reduce((sum, i) => sum + i.itemTotal, 0);
     this.totalTax = this.items.reduce((sum, i) => sum + (i.gst * i.qty), 0);
-    this.total = this.subtotal + this.totalTax;
     this.totalQty = this.items.reduce((sum, i) => sum + i.qty, 0);
+    this.totalItemDiscount = this.items.reduce((sum, i) => sum + (i.discountAmount || 0), 0);
 
-    // Bill-level profit
+    // Bill-level discount (cap at subtotal + tax)
+    const beforeBillDiscount = this.subtotal + this.totalTax;
+    this.billDiscountAmount = Math.min(this.billDiscountAmount || 0, beforeBillDiscount);
+
+    // Combined discount
+    this.totalDiscount = this.totalItemDiscount + this.billDiscountAmount;
+
+    // Final total
+    this.total = beforeBillDiscount - this.billDiscountAmount;
+    if (this.total < 0) this.total = 0;
+
+    // ── Distribute bill-level discount into item profits ───────
+    // So that item-level netProfit aggregation in reports matches bill-level totals
+    if (this.billDiscountAmount > 0 && this.subtotal > 0) {
+        for (const item of this.items) {
+            const share = (item.itemTotal / this.subtotal) * this.billDiscountAmount;
+            const effectivePrice = (item.itemTotal - share) / (item.qty || 1);
+            item.itemProfit = (effectivePrice - item.costPrice) * item.qty;
+            item.returnedProfit = (effectivePrice - item.costPrice) * item.returnedQty;
+            item.netProfit = item.itemProfit - item.returnedProfit;
+        }
+    }
+
+    // ── Profit ─────────────────────────────────────────────────
     this.totalCost = this.items.reduce((sum, i) => sum + (i.costPrice * i.qty), 0);
     this.billProfit = this.total - this.totalCost;
     this.returnedProfit = this.items.reduce((sum, i) => sum + i.returnedProfit, 0);
     this.netProfit = this.billProfit - this.returnedProfit;
 
-    // Return totals
+    // ── Returns ────────────────────────────────────────────────
     this.totalRefunded = this.returns.reduce((sum, r) => sum + r.refundAmount, 0);
+    // Ledger adjustments reduce what the customer owes (no cash moves)
+    this.totalLedgerRefunded = this.returns
+        .filter((r) => r.refundMethod === "ledger_adjust")
+        .reduce((sum, r) => sum + r.refundAmount, 0);
     this.netAmount = this.total - this.totalRefunded;
 
-    // Calculate amountPaid from payments[]
+    // ── Payments ───────────────────────────────────────────────
     this.amountPaid = this.payments.reduce((sum, p) => sum + p.amount, 0);
 
-    // Payment status
-    if (this.amountPaid <= 0) {
+    // Effective total customer must settle (after ledger-only refunds)
+    const effectiveTotal = Math.max(0, this.total - this.totalLedgerRefunded);
+
+    if (this.amountPaid <= 0 && effectiveTotal > 0) {
         this.paymentStatus = "unpaid";
-    } else if (this.amountPaid < this.total) {
+    } else if (this.amountPaid < effectiveTotal) {
         this.paymentStatus = "partial";
     } else {
         this.paymentStatus = "paid";
     }
 
-    // Payment calculations
-    this.amountDue = this.total - this.amountPaid;
-    if (this.amountDue < 0) this.amountDue = 0;
+    // NOTE: amountDue is allowed to go NEGATIVE.
+    // A negative value means the customer overpaid (e.g. returned items after
+    // fully paying the bill) and represents store credit owed TO the customer.
+    // The post-save hook aggregates amountDue across all their bills so the
+    // customer-level balance naturally reflects both debt (+) and credit (-).
+    this.amountDue = effectiveTotal - this.amountPaid;
     this.change = this.cashGiven - this.total;
     if (this.change < 0) this.change = 0;
 
-    // Return status
+    // ── Return status ──────────────────────────────────────────
     const totalReturnedQty = this.items.reduce((sum, i) => sum + i.returnedQty, 0);
     if (totalReturnedQty <= 0) {
         this.returnStatus = "none";
@@ -222,13 +343,15 @@ billSchema.pre("save", function (next) {
 });
 
 // ── Post-save: sync customer ledger (skip for walk-in) ───────
+// Uses this.$session() so it participates in any active transaction.
 billSchema.post("save", async function () {
     if (!this.customer) return;
 
+    const session = this.$session() || null;
     const Customer = mongoose.model("Customer");
 
     // Aggregate all bills for this customer in this business
-    const result = await mongoose.model("Bill").aggregate([
+    const pipeline = [
         {
             $match: {
                 customer: this.customer,
@@ -241,6 +364,8 @@ billSchema.post("save", async function () {
                 _id: null,
                 totalBilled: { $sum: "$total" },
                 totalPaid: { $sum: "$amountPaid" },
+                totalLedgerRefunded: { $sum: "$totalLedgerRefunded" },
+                balance: { $sum: "$amountDue" },
                 totalReturns: {
                     $sum: {
                         $cond: [{ $ne: ["$returnStatus", "none"] }, 1, 0]
@@ -250,18 +375,24 @@ billSchema.post("save", async function () {
                 lastPurchase: { $max: "$createdAt" }
             }
         }
-    ]);
+    ];
+
+    const result = session
+        ? await mongoose.model("Bill").aggregate(pipeline).session(session)
+        : await mongoose.model("Bill").aggregate(pipeline);
+
+    const opts = session ? { session } : {};
 
     if (result.length > 0) {
         const stats = result[0];
         await Customer.findByIdAndUpdate(this.customer, {
             totalBilled: stats.totalBilled,
             totalPaid: stats.totalPaid,
-            balance: stats.totalBilled - stats.totalPaid,
+            balance: stats.balance,
             totalPurchases: stats.totalPurchases,
             totalReturns: stats.totalReturns,
             lastPurchase: stats.lastPurchase
-        });
+        }, opts);
     } else {
         // No active bills — reset ledger
         await Customer.findByIdAndUpdate(this.customer, {
@@ -271,7 +402,7 @@ billSchema.post("save", async function () {
             totalPurchases: 0,
             totalReturns: 0,
             lastPurchase: null
-        });
+        }, opts);
     }
 });
 

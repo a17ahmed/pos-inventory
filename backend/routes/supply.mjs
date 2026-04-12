@@ -1,6 +1,10 @@
 import express from 'express';
-import { authorize } from '../middleware/rbac.mjs';
 import { uploadSupplyReceipt } from '../middleware/upload.mjs';
+import { validate } from '../middleware/validate.mjs';
+import {
+    supplyPaymentSchema,
+    supplyReturnSchema,
+} from '../middleware/validationSchemas.mjs';
 import {
     createSupply,
     getAllSupplies,
@@ -8,17 +12,19 @@ import {
     updateSupply,
     recordPayment,
     deleteSupply,
-    getSupplyStats
+    getSupplyStats,
+    processSupplyReturn
 } from '../controllers/supply.mjs';
 
 const supplyRouter = express.Router();
 
-supplyRouter.get('/stats', authorize('admin', 'manager'), getSupplyStats);
-supplyRouter.post('/', authorize('admin', 'manager'), uploadSupplyReceipt, createSupply);
+supplyRouter.get('/stats', getSupplyStats);
+supplyRouter.post('/', uploadSupplyReceipt, createSupply);
 supplyRouter.get('/', getAllSupplies);
 supplyRouter.get('/:id', getSupply);
-supplyRouter.patch('/:id', authorize('admin', 'manager'), uploadSupplyReceipt, updateSupply);
-supplyRouter.patch('/:id/pay', authorize('admin', 'manager'), recordPayment);
-supplyRouter.delete('/:id', authorize('admin'), deleteSupply);
+supplyRouter.patch('/:id', uploadSupplyReceipt, updateSupply);
+supplyRouter.patch('/:id/pay', validate(supplyPaymentSchema), recordPayment);
+supplyRouter.post('/:id/return', validate(supplyReturnSchema), processSupplyReturn);
+supplyRouter.delete('/:id', deleteSupply);
 
 export default supplyRouter;

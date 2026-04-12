@@ -48,6 +48,7 @@ import expenseRouter from './routes/expense.mjs';
 
 import vendorRouter from './routes/vendor.mjs';
 import supplyRouter from './routes/supply.mjs';
+import accessRouter from './routes/access.mjs';
 
 // Shared auth routes (refresh token, logout)
 import authRouter from './routes/auth.mjs';
@@ -85,6 +86,7 @@ import Counter from './models/counter.mjs';
 import Bill from './models/bill.mjs';
 import Business from './models/business.mjs';
 import Expense from './models/expense.mjs';
+import Supply from './models/supply.mjs';
 
 const initializeCounters = async () => {
     try {
@@ -109,6 +111,16 @@ const initializeCounters = async () => {
                     .sort({ expenseNumber: -1 }).select('expenseNumber').lean();
                 if (maxExpense?.expenseNumber) {
                     await Counter.initializeCounter('expenseNumber', bid, maxExpense.expenseNumber);
+                }
+            }
+
+            // Supply number counter
+            const supplyCounter = await Counter.findById(`supplyNumber:${bid}`);
+            if (!supplyCounter) {
+                const maxSupply = await Supply.findOne({ business: biz._id })
+                    .sort({ supplyNumber: -1 }).select('supplyNumber').lean();
+                if (maxSupply?.supplyNumber) {
+                    await Counter.initializeCounter('supplyNumber', bid, maxSupply.supplyNumber);
                 }
             }
         }
@@ -229,6 +241,9 @@ app.use("/customer", jwtAuth, accessControl, customerRouter);
 app.use("/expense", jwtAuth, accessControl, expenseRouter);
 app.use("/vendor", jwtAuth, accessControl, vendorRouter);
 app.use("/supply", jwtAuth, accessControl, supplyRouter);
+
+// Access control management (admin only, no accessControl middleware needed - uses RBAC)
+app.use("/access", jwtAuth, accessRouter);
 
 // Import Employee model for socket auth
 import Employee from './models/employee.mjs';

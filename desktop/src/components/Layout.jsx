@@ -3,7 +3,7 @@ import { NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useBusiness } from '../context/BusinessContext';
 import { useTheme } from '../context/ThemeContext';
-import api from '../services/api';
+import { getPendingBills } from '../services/api/pendingBills';
 import {
     FiHome,
     FiPackage,
@@ -20,6 +20,7 @@ import {
     FiSettings,
     FiPieChart,
     FiTruck,
+    FiUserPlus,
 } from 'react-icons/fi';
 
 const Layout = ({ children }) => {
@@ -34,7 +35,7 @@ const Layout = ({ children }) => {
     useEffect(() => {
         const fetchPendingCount = async () => {
             try {
-                const res = await api.get('/pending-bill');
+                const res = await getPendingBills();
                 const activeBills = (res.data || []).filter(b => b.status === 'pending');
                 setPendingCount(activeBills.length);
             } catch (error) {
@@ -72,6 +73,7 @@ const Layout = ({ children }) => {
         { path: '/dashboard', icon: FiHome, label: 'Dashboard' },
         { path: '/products', icon: FiPackage, label: config?.itemsLabel || 'Products' },
         { path: '/employees', icon: FiUsers, label: config?.staffLabel || 'Employees' },
+        { path: '/customers', icon: FiUserPlus, label: 'Customers' },
         { path: '/receipts', icon: FiFileText, label: 'Receipts' },
         { path: '/returns', icon: FiRotateCcw, label: 'Returns' },
         { path: '/expenses', icon: FiDollarSign, label: 'Expenses' },

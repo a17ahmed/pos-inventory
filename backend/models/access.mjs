@@ -44,14 +44,16 @@ const accessSchema = new Schema(
                 view: { type: Boolean, default: false },
                 create: { type: Boolean, default: false },
                 edit: { type: Boolean, default: false },
-                delete: { type: Boolean, default: false }
+                delete: { type: Boolean, default: false },
+                pay: { type: Boolean, default: false }
             },
             supplies: {
                 view: { type: Boolean, default: false },
                 create: { type: Boolean, default: false },
                 edit: { type: Boolean, default: false },
                 delete: { type: Boolean, default: false },
-                recordPayment: { type: Boolean, default: false }
+                recordPayment: { type: Boolean, default: false },
+                processReturn: { type: Boolean, default: false }
             },
 
             // Finance
@@ -66,7 +68,9 @@ const accessSchema = new Schema(
             // People
             customers: {
                 view: { type: Boolean, default: false },
-                create: { type: Boolean, default: false }
+                create: { type: Boolean, default: false },
+                edit: { type: Boolean, default: false },
+                delete: { type: Boolean, default: false }
             },
             employees: {
                 view: { type: Boolean, default: false },

@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useBusiness } from '../context/BusinessContext';
 import { useAuth } from '../context/AuthContext';
-import api from '../services/api';
+import { getReceiptStats } from '../services/api/receipts';
 import {
     FiUser,
     FiMail,
@@ -37,7 +37,7 @@ const Profile = () => {
 
     const loadStats = async () => {
         try {
-            const res = await api.get('/receipt/stats');
+            const res = await getReceiptStats();
             setStats({
                 todaySales: res.data.netTodaySales || res.data.todaySales || 0,
                 todayOrders: res.data.todayOrders || 0,

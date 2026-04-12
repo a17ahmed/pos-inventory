@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import api from '../services/api';
+import { adminLogin as adminLoginApi, logout as logoutApi } from '../services/api/auth';
 
 const AuthContext = createContext(null);
 
@@ -53,7 +53,7 @@ export const AuthProvider = ({ children }) => {
 
     const login = async (email, password) => {
         try {
-            const response = await api.post('/adminAuth/login', { email, password });
+            const response = await adminLoginApi(email, password);
             const { token, refreshToken, admin, business } = response.data;
 
             localStorage.setItem('token', token);
@@ -76,7 +76,7 @@ export const AuthProvider = ({ children }) => {
         try {
             const refreshToken = localStorage.getItem('refreshToken');
             if (refreshToken) {
-                await api.post('/auth/logout', { refreshToken }).catch(() => {});
+                await logoutApi(refreshToken).catch(() => {});
             }
         } finally {
             localStorage.removeItem('token');

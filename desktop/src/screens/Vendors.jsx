@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useBusiness } from '../context/BusinessContext';
-import api from '../services/api';
+import { getVendors, createVendor, updateVendor, deleteVendor } from '../services/api/vendors';
+import { getSupplies, getSupplyStats, createSupply, updateSupply, deleteSupply, paySupply } from '../services/api/supplies';
+import { getProducts } from '../services/api/products';
 import {
     FiPlus,
     FiSearch,
@@ -19,6 +21,7 @@ import {
     FiCheckCircle,
     FiClock,
     FiMinus,
+    FiChevronDown,
 } from 'react-icons/fi';
 
 // ---------------------------------------------------------------------------
@@ -35,7 +38,7 @@ const defaultSupplyForm = () => ({
     notes: '',
 });
 
-const defaultItem = () => ({ name: '', qty: 1, unitPrice: '', total: 0 });
+const defaultItem = () => ({ product: '', name: '', qty: 1, unitPrice: '', total: 0 });
 
 const defaultVendorForm = () => ({
     name: '',
@@ -66,6 +69,9 @@ const Vendors = () => {
 
     // ── Vendors list ─────────────────────────────────────────────────────────
     const [vendors, setVendors] = useState([]);
+
+    // ── Products list (for supply item picker) ───────────────────────────────
+    const [products, setProducts] = useState([]);
 
     // ── Supplies list ────────────────────────────────────────────────────────
     const [supplies, setSupplies] = useState([]);
@@ -107,11 +113,21 @@ const Vendors = () => {
 
     const fetchVendors = useCallback(async () => {
         try {
-            const res = await api.get('/vendor');
+            const res = await getVendors();
             const data = res.data;
             setVendors(Array.isArray(data) ? data : data?.vendors || []);
         } catch (err) {
             console.error('Error fetching vendors:', err);
+        }
+    }, []);
+
+    const fetchProducts = useCallback(async () => {
+        try {
+            const res = await getProducts();
+            const data = res.data;
+            setProducts(Array.isArray(data) ? data : data?.products || []);
+        } catch (err) {
+            console.error('Error fetching products:', err);
         }
     }, []);
 
@@ -122,7 +138,7 @@ const Vendors = () => {
             const params = {};
             if (statusFilter !== 'all') params.paymentStatus = statusFilter;
             if (vendorFilter) params.vendor = vendorFilter;
-            const res = await api.get('/supply', { params });
+            const res = await getSupplies(params);
             const data = res.data;
             if (data && Array.isArray(data.supplies)) {
                 setSupplies(data.supplies);
@@ -145,7 +161,7 @@ const Vendors = () => {
 
     const fetchStats = useCallback(async () => {
         try {
-            const res = await api.get('/supply/stats');
+            const res = await getSupplyStats();
             setStats(res.data);
         } catch (err) {
             console.error('Error fetching stats:', err);
@@ -155,7 +171,8 @@ const Vendors = () => {
     // Initial load
     useEffect(() => {
         fetchVendors();
-    }, [fetchVendors]);
+        fetchProducts();
+    }, [fetchVendors, fetchProducts]);
 
     useEffect(() => {
         if (activeTab === 'supplies') fetchSupplies();
@@ -213,6 +230,7 @@ const Vendors = () => {
             setSupplyItems(
                 supply.items?.length
                     ? supply.items.map((i) => ({
+                          product: (typeof i.product === 'object' ? i.product?._id : i.product) || '',
                           name: i.name || '',
                           qty: i.qty ?? i.quantity ?? 1,
                           unitPrice: i.unitPrice ?? i.price ?? '',
@@ -227,6 +245,8 @@ const Vendors = () => {
         }
         setReceiptFile(null);
         setShowSupplyModal(true);
+        // Refresh products in case new ones were added
+        fetchProducts();
     };
 
     const closeSupplyModal = () => {
@@ -246,6 +266,23 @@ const Vendors = () => {
         });
     };
 
+    const selectProductForItem = (index, productId) => {
+        setSupplyItems((prev) => {
+            const next = [...prev];
+            const prod = products.find((p) => p._id === productId);
+            const currentQty = parseFloat(next[index].qty) || 1;
+            const newUnitPrice = prod?.costPrice ? prod.costPrice : next[index].unitPrice || '';
+            next[index] = {
+                ...next[index],
+                product: productId,
+                name: prod?.name || '',
+                unitPrice: newUnitPrice,
+                total: (parseFloat(newUnitPrice) || 0) * currentQty,
+            };
+            return next;
+        });
+    };
+
     const addItem = () => setSupplyItems((prev) => [...prev, defaultItem()]);
 
     const removeItem = (index) =>
@@ -255,6 +292,14 @@ const Vendors = () => {
 
     const handleSupplySubmit = async (e) => {
         e.preventDefault();
+
+        // Validate: every item must have a product picked
+        const missingProduct = supplyItems.some((i) => !i.product);
+        if (missingProduct) {
+            alert('Please select a product for every supply item.');
+            return;
+        }
+
         setSubmitting(true);
         try {
             const formData = new FormData();
@@ -267,6 +312,7 @@ const Vendors = () => {
                 'items',
                 JSON.stringify(
                     supplyItems.map((i) => ({
+                        product: i.product,
                         name: i.name,
                         quantity: Number(i.qty),
                         unitPrice: Number(i.unitPrice),
@@ -277,13 +323,9 @@ const Vendors = () => {
             if (receiptFile) formData.append('receiptImage', receiptFile);
 
             if (editingSupply) {
-                await api.patch(`/supply/${editingSupply._id}`, formData, {
-                    headers: { 'Content-Type': 'multipart/form-data' },
-                });
+                await updateSupply(editingSupply._id, formData);
             } else {
-                await api.post('/supply', formData, {
-                    headers: { 'Content-Type': 'multipart/form-data' },
-                });
+                await createSupply(formData);
             }
 
             closeSupplyModal();
@@ -299,7 +341,7 @@ const Vendors = () => {
     const handleDeleteSupply = async (id) => {
         if (!window.confirm('Delete this supply record?')) return;
         try {
-            await api.delete(`/supply/${id}`);
+            await deleteSupply(id);
             fetchSupplies();
         } catch (err) {
             console.error('Error deleting supply:', err);
@@ -322,7 +364,7 @@ const Vendors = () => {
         if (!payAmount || Number(payAmount) <= 0) return;
         setPaying(true);
         try {
-            await api.patch(`/supply/${payingSupply._id}/pay`, {
+            await paySupply(payingSupply._id, {
                 amount: Number(payAmount),
             });
             setShowPayModal(false);
@@ -366,9 +408,9 @@ const Vendors = () => {
         setVendorSubmitting(true);
         try {
             if (editingVendor) {
-                await api.patch(`/vendor/${editingVendor._id}`, vendorForm);
+                await updateVendor(editingVendor._id, vendorForm);
             } else {
-                await api.post('/vendor', vendorForm);
+                await createVendor(vendorForm);
             }
             closeVendorModal();
             fetchVendors();
@@ -383,7 +425,7 @@ const Vendors = () => {
     const handleDeleteVendor = async (id) => {
         if (!window.confirm('Delete this vendor? This will not delete their supply records.')) return;
         try {
-            await api.delete(`/vendor/${id}`);
+            await deleteVendor(id);
             fetchVendors();
         } catch (err) {
             console.error('Error deleting vendor:', err);
@@ -976,22 +1018,25 @@ const Vendors = () => {
                                     <label className="block text-sm font-medium text-slate-700 dark:text-d-text mb-1">
                                         Vendor *
                                     </label>
-                                    <select
-                                        value={supplyForm.vendor}
-                                        onChange={(e) =>
-                                            setSupplyForm({ ...supplyForm, vendor: e.target.value })
-                                        }
-                                        required
-                                        className="w-full px-4 py-2 bg-white dark:bg-d-bg border border-slate-200 dark:border-d-border rounded-xl focus:ring-2 focus:ring-primary-500 dark:focus:border-d-border-hover focus:outline-none text-slate-800 dark:text-d-text"
-                                    >
-                                        <option value="">Select vendor...</option>
-                                        {vendors.map((v) => (
-                                            <option key={v._id} value={v._id}>
-                                                {v.name}
-                                                {v.company ? ` — ${v.company}` : ''}
-                                            </option>
-                                        ))}
-                                    </select>
+                                    <div className="relative">
+                                        <select
+                                            value={supplyForm.vendor}
+                                            onChange={(e) =>
+                                                setSupplyForm({ ...supplyForm, vendor: e.target.value })
+                                            }
+                                            required
+                                            className="appearance-none w-full px-4 py-2 pr-10 bg-white dark:bg-d-bg border border-slate-200 dark:border-d-border rounded-xl focus:ring-2 focus:ring-primary-500 dark:focus:border-d-border-hover focus:outline-none text-slate-800 dark:text-d-text"
+                                        >
+                                            <option value="">Select vendor...</option>
+                                            {vendors.map((v) => (
+                                                <option key={v._id} value={v._id}>
+                                                    {v.name}
+                                                    {v.company ? ` — ${v.company}` : ''}
+                                                </option>
+                                            ))}
+                                        </select>
+                                        <FiChevronDown className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 dark:text-d-muted" />
+                                    </div>
                                 </div>
                                 <div>
                                     <label className="block text-sm font-medium text-slate-700 dark:text-d-text mb-1">
@@ -1059,24 +1104,39 @@ const Vendors = () => {
 
                                 {/* Items Header */}
                                 <div className="grid grid-cols-12 gap-2 mb-2 px-1">
-                                    <span className="col-span-5 text-xs text-slate-500 dark:text-d-muted font-medium">Name</span>
+                                    <span className="col-span-5 text-xs text-slate-500 dark:text-d-muted font-medium">Product</span>
                                     <span className="col-span-2 text-xs text-slate-500 dark:text-d-muted font-medium">Qty</span>
                                     <span className="col-span-2 text-xs text-slate-500 dark:text-d-muted font-medium">Unit Price</span>
                                     <span className="col-span-2 text-xs text-slate-500 dark:text-d-muted font-medium">Total</span>
                                     <span className="col-span-1" />
                                 </div>
 
+                                {products.length === 0 && (
+                                    <div className="mb-3 p-3 bg-yellow-50 dark:bg-[rgba(255,210,100,0.08)] border border-yellow-200 dark:border-[rgba(255,210,100,0.22)] rounded-xl text-xs text-yellow-800 dark:text-d-accent">
+                                        No products found. Please add products first from the Products screen, then come back to record a supply.
+                                    </div>
+                                )}
+
                                 <div className="space-y-2">
                                     {supplyItems.map((item, idx) => (
                                         <div key={idx} className="grid grid-cols-12 gap-2 items-center">
-                                            <input
-                                                type="text"
-                                                value={item.name}
-                                                onChange={(e) => updateItem(idx, 'name', e.target.value)}
-                                                placeholder="Item name"
-                                                required
-                                                className="col-span-5 px-3 py-2 bg-white dark:bg-d-bg border border-slate-200 dark:border-d-border rounded-xl text-sm focus:ring-2 focus:ring-primary-500 dark:focus:border-d-border-hover focus:outline-none text-slate-800 dark:text-d-text placeholder-slate-400 dark:placeholder-d-faint"
-                                            />
+                                            <div className="col-span-5 relative">
+                                                <select
+                                                    value={item.product}
+                                                    onChange={(e) => selectProductForItem(idx, e.target.value)}
+                                                    required
+                                                    className="appearance-none w-full px-3 py-2 pr-9 bg-white dark:bg-d-bg border border-slate-200 dark:border-d-border rounded-xl text-sm focus:ring-2 focus:ring-primary-500 dark:focus:border-d-border-hover focus:outline-none text-slate-800 dark:text-d-text"
+                                                >
+                                                    <option value="">Select product…</option>
+                                                    {products.map((p) => (
+                                                        <option key={p._id} value={p._id}>
+                                                            {p.name}
+                                                            {p.trackStock ? ` (stock: ${p.stockQuantity ?? 0})` : ''}
+                                                        </option>
+                                                    ))}
+                                                </select>
+                                                <FiChevronDown className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 dark:text-d-muted" />
+                                            </div>
                                             <input
                                                 type="number"
                                                 min="1"

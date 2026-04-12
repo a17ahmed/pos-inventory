@@ -1,5 +1,6 @@
 import Employee from '../models/employee.mjs';
 import Business from '../models/business.mjs';
+import Access from '../models/access.mjs';
 import bcrypt from 'bcrypt';
 
 // Get business prefix for employee ID (businessname@)
@@ -159,6 +160,17 @@ export const createEmployee = async (req, res) => {
 
         const savedEmployee = await employee.save();
 
+        // Auto-create default access permissions for the new employee
+        try {
+            await Access.create({
+                employee: savedEmployee._id,
+                business: req.user.businessId
+            });
+        } catch (accessErr) {
+            // Don't fail employee creation if access creation fails
+            console.error('Auto-create access failed:', accessErr.message);
+        }
+
         res.status(201).json({
             success: true,
             employee: {
@@ -238,6 +250,12 @@ export const deleteEmployee = async (req, res) => {
         if (!employee) {
             return res.status(404).json({ message: 'Employee not found' });
         }
+
+        // Clean up access permissions
+        await Access.findOneAndDelete({
+            employee: id,
+            business: req.user.businessId
+        }).catch(() => {});
 
         res.status(200).json({ message: 'Employee deleted successfully' });
     } catch (error) {

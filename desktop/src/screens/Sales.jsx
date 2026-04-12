@@ -1,7 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useBusiness } from '../context/BusinessContext';
 import { useAuth } from '../context/AuthContext';
-import api from '../services/api';
+import { getProducts } from '../services/api/products';
+import { createReceipt } from '../services/api/receipts';
+import { getPendingBills, createPendingBill, deletePendingBill as deletePendingBillApi } from '../services/api/pendingBills';
 import {
     FiSearch,
     FiPlus,
@@ -125,7 +127,7 @@ const Sales = () => {
 
     const fetchProducts = async () => {
         try {
-            const res = await api.get('/product');
+            const res = await getProducts();
             const productList = res.data || [];
             setProducts(productList);
             const cats = [...new Set(productList.map((p) => p.category).filter(Boolean))];
@@ -140,7 +142,7 @@ const Sales = () => {
     const fetchPendingBills = async () => {
         setLoadingPending(true);
         try {
-            const res = await api.get('/pending-bill');
+            const res = await getPendingBills();
             setPendingBills(res.data || []);
         } catch (error) {
             console.error('Error fetching pending bills:', error);
@@ -245,12 +247,12 @@ const Sales = () => {
                 amountDue: effectiveTotal,
             };
 
-            const response = await api.post('/receipt', orderData);
+            const response = await createReceipt(orderData);
 
             // If this was a resumed pending bill, delete it
             if (pendingBillId) {
                 try {
-                    await api.delete(`/pending-bill/${pendingBillId}`);
+                    await deletePendingBillApi(pendingBillId);
                 } catch (err) {
                     console.error('Error deleting pending bill:', err);
                 }
@@ -293,7 +295,7 @@ const Sales = () => {
 
         setHoldingBill(true);
         try {
-            await api.post('/pending-bill', {
+            await createPendingBill({
                 billName: `Bill ${Date.now()}`,
                 items: cart.map((item) => ({
                     _id: item._id,
@@ -346,11 +348,11 @@ const Sales = () => {
         setShowPendingModal(false);
     };
 
-    const deletePendingBill = async (billId) => {
+    const handleDeletePendingBill = async (billId) => {
         if (!confirm('Are you sure you want to delete this pending bill?')) return;
 
         try {
-            await api.delete(`/pending-bill/${billId}`);
+            await deletePendingBillApi(billId);
             setPendingBills((prev) => prev.filter((b) => b._id !== billId));
         } catch (error) {
             console.error('Error deleting pending bill:', error);
@@ -897,7 +899,7 @@ const Sales = () => {
                                                     Load Bill
                                                 </button>
                                                 <button
-                                                    onClick={() => deletePendingBill(bill._id)}
+                                                    onClick={() => handleDeletePendingBill(bill._id)}
                                                     className="px-4 py-2 bg-red-100 text-red-600 rounded-lg hover:bg-red-200"
                                                 >
                                                     <FiTrash2 size={18} />
