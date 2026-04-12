@@ -59,6 +59,9 @@ import Returns from './screens/Returns';
 import Vendors from './screens/Vendors';
 import Customers from './screens/Customers';
 import CustomerLedger from './screens/CustomerLedger';
+import VendorLedger from './screens/VendorLedger';
+import CashBook from './screens/CashBook';
+import Inventory from './screens/Inventory';
 
 // Layout
 import Layout from './components/Layout';
@@ -270,11 +273,41 @@ function AppContent() {
                 }
             />
             <Route
+                path="/inventory"
+                element={
+                    <ProtectedRoute>
+                        <Layout>
+                            <Inventory />
+                        </Layout>
+                    </ProtectedRoute>
+                }
+            />
+            <Route
                 path="/customers/:id/ledger"
                 element={
                     <ProtectedRoute>
                         <Layout>
                             <CustomerLedger />
+                        </Layout>
+                    </ProtectedRoute>
+                }
+            />
+            <Route
+                path="/vendors/:id/ledger"
+                element={
+                    <ProtectedRoute>
+                        <Layout>
+                            <VendorLedger />
+                        </Layout>
+                    </ProtectedRoute>
+                }
+            />
+            <Route
+                path="/cashbook"
+                element={
+                    <ProtectedRoute>
+                        <Layout>
+                            <CashBook />
                         </Layout>
                     </ProtectedRoute>
                 }

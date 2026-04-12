@@ -281,10 +281,39 @@ button:focus {
 /* Print styles */
 @media print {
     body {
-        background: white;
+        background: white !important;
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
     }
     .no-print {
         display: none !important;
+    }
+
+    /* Hide sidebar and layout chrome */
+    nav, aside,
+    [style*="width: 66px"],
+    [style*="width: 200px"],
+    [style*="width: 240px"] {
+        display: none !important;
+    }
+
+    /* Full-width content */
+    main, [class*="ml-"] {
+        margin-left: 0 !important;
+        width: 100% !important;
+    }
+
+    /* Fixed overlays become static for multi-page flow */
+    .print-static {
+        position: static !important;
+        overflow: visible !important;
+        height: auto !important;
+    }
+
+    /* Ensure content flows across pages */
+    html, body, #root {
+        height: auto !important;
+        overflow: visible !important;
     }
 }
 

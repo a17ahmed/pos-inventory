@@ -2,11 +2,12 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useBusiness } from '../context/BusinessContext';
 import { useAuth } from '../context/AuthContext';
-import { getProducts } from '../services/api/products';
+import { getProducts, getDeadStock, getLowStockProducts } from '../services/api/products';
 import { getReceiptStats, getTopProducts } from '../services/api/receipts';
-import { createBill } from '../services/api/bills';
+import { createBill, getSalesByProduct } from '../services/api/bills';
 import { searchCustomers } from '../services/api/customers';
 import { getExpenses as getApprovedExpenses } from '../services/api/expenses';
+import { getCashBalance } from '../services/api/cashbook';
 import { getPendingBills, createPendingBill, resumePendingBill, cancelPendingBill as cancelPendingBillApi } from '../services/api/pendingBills';
 import {
     FiTrendingUp,
@@ -36,6 +37,8 @@ import {
 import {
     LineChart,
     Line,
+    AreaChart,
+    Area,
     XAxis,
     YAxis,
     CartesianGrid,

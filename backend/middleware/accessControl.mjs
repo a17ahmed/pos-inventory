@@ -119,6 +119,11 @@ const ROUTE_PERMISSIONS = {
         DELETE: { _default: { module: 'employees', action: 'delete' } }
     },
 
+    '/cashbook': {
+        GET:   { _default: { module: 'cashbook', action: 'view' } },
+        POST:  { _default: { module: 'cashbook', action: 'manage' } },
+    },
+
     '/bill': {
         GET: {
             _default:    { module: 'pos', action: 'view' },

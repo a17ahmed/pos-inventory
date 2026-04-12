@@ -534,3 +534,18 @@ export const updateExpenseSchema = Joi.object({
 export const rejectExpenseSchema = Joi.object({
     reason: Joi.string().required(),
 });
+
+// ═══════════════════════════════════════════════════════════════
+// CASHBOOK
+// ═══════════════════════════════════════════════════════════════
+
+export const openingBalanceSchema = Joi.object({
+    amount: Joi.number().min(0).required(),
+    note: Joi.string().allow('').optional(),
+});
+
+export const cashbookTransactionSchema = Joi.object({
+    amount: Joi.number().positive().required(),
+    note: Joi.string().allow('').optional(),
+    description: Joi.string().allow('').optional(),
+});

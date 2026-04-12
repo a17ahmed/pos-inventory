@@ -5,6 +5,7 @@ import Product from "../models/product.mjs";
 import Customer from "../models/customer.mjs";
 import Expense from "../models/expense.mjs";
 import StockMovement from "../models/stockMovement.mjs";
+import { recordCashEntry } from "./cashbook.mjs";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -413,6 +414,29 @@ export const createBill = async (req, res) => {
                     number: saved.billNumber,
                     performedBy: req.user.name || 'Staff'
                 }, session);
+            }
+
+            // Record cash payments in cashbook
+            if (billStatus === "completed" && payments.length > 0) {
+                const cashTotal = payments
+                    .filter(p => (p.method || 'cash') === 'cash')
+                    .reduce((sum, p) => sum + (p.amount || 0), 0);
+
+                if (cashTotal > 0) {
+                    await recordCashEntry({
+                        type: 'sale_collection',
+                        amount: cashTotal,
+                        direction: 'in',
+                        referenceType: 'bill',
+                        referenceId: saved._id,
+                        referenceNumber: `Bill #${saved.billNumber}`,
+                        description: `Sale collection - Bill #${saved.billNumber}`,
+                        performedBy: req.user.name || 'Staff',
+                        performedById: req.user.id,
+                        businessId: req.user.businessId,
+                        session,
+                    });
+                }
             }
 
             await session.commitTransaction();
@@ -1053,6 +1077,24 @@ export const processReturn = async (req, res) => {
                 reason: 'Bill return',
                 performedBy: req.user.name || 'Staff'
             }, session);
+
+            // Record cash refund in cashbook (only for cash refunds, not ledger adjustments)
+            if (refundMethod === 'cash' && totalRefundAmount > 0) {
+                await recordCashEntry({
+                    type: 'customer_refund',
+                    amount: totalRefundAmount,
+                    direction: 'out',
+                    referenceType: 'bill',
+                    referenceId: bill._id,
+                    referenceNumber: `Return ${returnNumber} (Bill #${bill.billNumber})`,
+                    description: `Cash refund - Bill #${bill.billNumber}`,
+                    performedBy: req.user.name || 'Staff',
+                    performedById: req.user.id,
+                    businessId: req.user.businessId,
+                    session,
+                });
+            }
+
             await session.commitTransaction();
         } catch (txError) {
             await session.abortTransaction();
@@ -1568,6 +1610,8 @@ export const getBillStats = async (req, res) => {
                         totalDiscount: { $sum: { $ifNull: ["$totalDiscount", 0] } },
                         totalItemDiscount: { $sum: { $ifNull: ["$totalItemDiscount", 0] } },
                         totalBillDiscount: { $sum: { $ifNull: ["$billDiscountAmount", 0] } },
+                        totalCollected: { $sum: { $ifNull: ["$amountPaid", 0] } },
+                        totalCredit: { $sum: { $ifNull: ["$amountDue", 0] } },
                     },
                 },
             ],
@@ -1600,6 +1644,8 @@ export const getBillStats = async (req, res) => {
                         orders: { $sum: 1 },
                         refunded: { $sum: "$totalRefunded" },
                         profit: { $sum: "$netProfit" },
+                        collected: { $sum: { $ifNull: ["$amountPaid", 0] } },
+                        credit: { $sum: { $ifNull: ["$amountDue", 0] } },
                     },
                 },
             ];
@@ -1614,10 +1660,40 @@ export const getBillStats = async (req, res) => {
                         orders: { $sum: 1 },
                         refunded: { $sum: "$totalRefunded" },
                         profit: { $sum: "$netProfit" },
+                        collected: { $sum: { $ifNull: ["$amountPaid", 0] } },
+                        credit: { $sum: { $ifNull: ["$amountDue", 0] } },
                     },
                 },
             ];
         }
+
+        // ── Refund breakdown by method (today) ──────────────────
+        facets.todayRefundBreakdown = [
+            { $match: { business: businessId, ...saleMatch, "returns.0": { $exists: true } } },
+            { $unwind: "$returns" },
+            { $match: { "returns.returnedAt": { $gte: today } } },
+            {
+                $group: {
+                    _id: "$returns.refundMethod",
+                    amount: { $sum: "$returns.refundAmount" },
+                    count: { $sum: 1 },
+                },
+            },
+        ];
+
+        // Refund breakdown for selected period
+        facets.periodRefundBreakdown = [
+            { $match: { business: businessId, ...saleMatch, "returns.0": { $exists: true } } },
+            { $unwind: "$returns" },
+            { $match: { "returns.returnedAt": { $gte: periodStart } } },
+            {
+                $group: {
+                    _id: "$returns.refundMethod",
+                    amount: { $sum: "$returns.refundAmount" },
+                    count: { $sum: 1 },
+                },
+            },
+        ];
 
         // Chart data
         if (includeChart) {
@@ -1655,6 +1731,8 @@ export const getBillStats = async (req, res) => {
             totalDiscount: 0,
             totalItemDiscount: 0,
             totalBillDiscount: 0,
+            totalCollected: 0,
+            totalCredit: 0,
         };
         const prev = facetResult.prevPeriod[0] || { grossRevenue: 0 };
 
@@ -1674,9 +1752,11 @@ export const getBillStats = async (req, res) => {
                 orders: period.totalOrders,
                 refunded: period.totalRefunded,
                 profit: period.netProfit,
+                collected: period.totalCollected,
+                credit: period.totalCredit,
             };
         } else {
-            todayData = facetResult.todaySales?.[0] || { sales: 0, orders: 0, refunded: 0, profit: 0 };
+            todayData = facetResult.todaySales?.[0] || { sales: 0, orders: 0, refunded: 0, profit: 0, collected: 0, credit: 0 };
         }
 
         // Month stats
@@ -1687,10 +1767,28 @@ export const getBillStats = async (req, res) => {
                 orders: period.totalOrders,
                 refunded: period.totalRefunded,
                 profit: period.netProfit,
+                collected: period.totalCollected,
+                credit: period.totalCredit,
             };
         } else {
-            monthData = facetResult.monthSales?.[0] || { sales: 0, orders: 0, refunded: 0, profit: 0 };
+            monthData = facetResult.monthSales?.[0] || { sales: 0, orders: 0, refunded: 0, profit: 0, collected: 0, credit: 0 };
         }
+
+        // ── Refund breakdown helper ───────────────────────────────
+        const parseRefundBreakdown = (arr) => {
+            const out = { cashRefund: 0, cardRefund: 0, ledgerAdjust: 0, storeCreditRefund: 0, total: 0 };
+            for (const r of arr || []) {
+                if (r._id === "cash") out.cashRefund = r.amount;
+                else if (r._id === "card") out.cardRefund = r.amount;
+                else if (r._id === "ledger_adjust") out.ledgerAdjust = r.amount;
+                else if (r._id === "store_credit") out.storeCreditRefund = r.amount;
+                out.total += r.amount;
+            }
+            return out;
+        };
+
+        const todayRefunds = parseRefundBreakdown(facetResult.todayRefundBreakdown);
+        const periodRefunds = parseRefundBreakdown(facetResult.periodRefundBreakdown);
 
         const response = {
             // Core (filtered period)
@@ -1707,6 +1805,7 @@ export const getBillStats = async (req, res) => {
 
             // Returns & refunds
             totalRefunded: period.totalRefunded,
+            refundBreakdown: periodRefunds,
 
             // P&L
             netRevenue,
@@ -1715,12 +1814,22 @@ export const getBillStats = async (req, res) => {
             netProfit: period.netProfit,
             profitMargin,
 
+            // Collection breakdown (period)
+            totalCollected: period.totalCollected,
+            totalCredit: period.totalCredit,
+
             // Today
             todaySales: todayData.sales,
             todayOrders: todayData.orders,
             todayRefunded: todayData.refunded,
             todayProfit: todayData.profit,
             netTodaySales: todayData.sales - todayData.refunded,
+            todayCollected: todayData.collected,
+            todayCredit: todayData.credit,
+            todayCashRefund: todayRefunds.cashRefund,
+            todayLedgerAdjust: todayRefunds.ledgerAdjust,
+            todayRefundBreakdown: todayRefunds,
+            todayCashInDrawer: todayData.collected - todayRefunds.cashRefund - todayRefunds.cardRefund,
 
             // Month
             monthSales: monthData.sales,
@@ -1728,6 +1837,8 @@ export const getBillStats = async (req, res) => {
             monthRefunded: monthData.refunded,
             monthProfit: monthData.profit,
             netMonthSales: monthData.sales - monthData.refunded,
+            monthCollected: monthData.collected,
+            monthCredit: monthData.credit,
 
             // Meta
             filter,
@@ -1918,6 +2029,24 @@ export const addPayment = async (req, res) => {
                 }, session);
             }
 
+            // Record cash payment in cashbook
+            const payMethod = method || 'cash';
+            if (payMethod === 'cash') {
+                await recordCashEntry({
+                    type: 'sale_collection',
+                    amount: parseFloat(amount),
+                    direction: 'in',
+                    referenceType: 'bill',
+                    referenceId: saved._id,
+                    referenceNumber: `Bill #${saved.billNumber}`,
+                    description: `Payment received - Bill #${saved.billNumber}`,
+                    performedBy: req.user.adminId ? 'Admin' : (req.user.name || 'Staff'),
+                    performedById: req.user.id,
+                    businessId: req.user.businessId,
+                    session,
+                });
+            }
+
             await session.commitTransaction();
             res.json(saved);
         } catch (txError) {
@@ -1996,7 +2125,7 @@ export const salesByProduct = async (req, res) => {
                     grossRevenue: { $sum: { $add: ["$items.itemTotal", "$items.discountAmount"] } },
                     totalItemDiscount: { $sum: "$items.discountAmount" },
                     netRevenue: { $sum: "$items.itemTotal" },
-                    totalCost: { $sum: { $multiply: ["$items.costPrice", "$items.qty"] } },
+                    totalCost: { $sum: { $multiply: ["$items.costPrice", { $subtract: ["$items.qty", "$items.returnedQty"] }] } },
                     totalProfit: { $sum: "$items.netProfit" },
                     avgPrice: { $avg: "$items.price" },
                     transactionCount: { $sum: 1 },
@@ -2231,7 +2360,7 @@ export const salesByCategory = async (req, res) => {
                     grossRevenue: { $sum: { $add: ["$items.itemTotal", { $ifNull: ["$items.discountAmount", 0] }] } },
                     totalDiscount: { $sum: { $ifNull: ["$items.discountAmount", 0] } },
                     netRevenue: { $sum: "$items.itemTotal" },
-                    totalCost: { $sum: { $multiply: [{ $ifNull: ["$items.costPrice", 0] }, "$items.qty"] } },
+                    totalCost: { $sum: { $multiply: [{ $ifNull: ["$items.costPrice", 0] }, { $subtract: ["$items.qty", { $ifNull: ["$items.returnedQty", 0] }] }] } },
                     totalProfit: { $sum: "$items.netProfit" },
                     transactionCount: { $sum: 1 },
                 }
@@ -2400,8 +2529,8 @@ export const taxReport = async (req, res) => {
                     $group: {
                         _id: "$items.gst",
                         taxableAmount: { $sum: "$items.itemTotal" },
-                        taxCollected: { $sum: { $multiply: ["$items.gst", "$items.qty"] } },
-                        itemCount: { $sum: "$items.qty" },
+                        taxCollected: { $sum: { $multiply: ["$items.gst", { $subtract: ["$items.qty", { $ifNull: ["$items.returnedQty", 0] }] }] } },
+                        itemCount: { $sum: { $subtract: ["$items.qty", { $ifNull: ["$items.returnedQty", 0] }] } },
                     }
                 },
                 { $sort: { _id: 1 } }
@@ -2415,7 +2544,7 @@ export const taxReport = async (req, res) => {
                     $group: {
                         _id: "$items.category",
                         taxableAmount: { $sum: "$items.itemTotal" },
-                        taxCollected: { $sum: { $multiply: ["$items.gst", "$items.qty"] } },
+                        taxCollected: { $sum: { $multiply: ["$items.gst", { $subtract: ["$items.qty", { $ifNull: ["$items.returnedQty", 0] }] }] } },
                     }
                 },
                 { $sort: { taxCollected: -1 } }

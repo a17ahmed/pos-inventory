@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useBusiness } from '../context/BusinessContext';
 import { getVendors, createVendor, updateVendor, deleteVendor } from '../services/api/vendors';
 import { getSupplies, getSupplyStats, createSupply, updateSupply, deleteSupply, paySupply } from '../services/api/supplies';
@@ -22,6 +23,7 @@ import {
     FiClock,
     FiMinus,
     FiChevronDown,
+    FiBookOpen,
 } from 'react-icons/fi';
 
 // ---------------------------------------------------------------------------
@@ -58,6 +60,7 @@ const TABS = [
 // ---------------------------------------------------------------------------
 
 const Vendors = () => {
+    const navigate = useNavigate();
     const { business } = useBusiness();
 
     // ── Tab ──────────────────────────────────────────────────────────────────
@@ -434,9 +437,7 @@ const Vendors = () => {
     };
 
     const drillToVendor = (vendorId) => {
-        setVendorFilter(vendorId);
-        setStatusFilter('all');
-        setActiveTab('supplies');
+        navigate(`/vendors/${vendorId}/ledger`);
     };
 
     // =========================================================================
@@ -729,6 +730,13 @@ const Vendors = () => {
                                         className="flex items-center justify-end gap-1"
                                         onClick={(e) => e.stopPropagation()}
                                     >
+                                        <button
+                                            onClick={() => navigate(`/vendors/${vendor._id}/ledger`)}
+                                            className="p-2 text-slate-500 dark:text-d-muted hover:text-blue-500 hover:bg-blue-50 dark:hover:bg-[rgba(91,156,246,0.1)] rounded-lg transition-colors"
+                                            title="View Ledger"
+                                        >
+                                            <FiBookOpen size={15} />
+                                        </button>
                                         <button
                                             onClick={() => openVendorModal(vendor)}
                                             className="p-2 text-slate-500 dark:text-d-muted hover:text-primary-500 hover:bg-primary-50 dark:hover:bg-[rgba(255,255,255,0.06)] rounded-lg transition-colors"

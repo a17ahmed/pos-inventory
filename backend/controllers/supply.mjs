@@ -5,6 +5,8 @@ import Counter from '../models/counter.mjs';
 import StockMovement from '../models/stockMovement.mjs';
 import mongoose from 'mongoose';
 import { cloudinary } from '../middleware/upload.mjs';
+import CashBook from '../models/cashbook.mjs';
+import { recordCashEntry } from './cashbook.mjs';
 
 // Helper: log stock movements in bulk
 // When session is provided (inside transaction), errors propagate to trigger abort.
@@ -111,10 +113,11 @@ const createSupply = async (req, res) => {
         // Build initial payment if paidAmount provided
         const payments = [];
         const initialPaid = Number(paidAmount) || 0;
+        const supplyPayMethod = req.body.paymentMethod || 'cash';
         if (initialPaid > 0) {
             payments.push({
                 amount: initialPaid,
-                method: req.body.paymentMethod || 'cash',
+                method: supplyPayMethod,
                 paidAt: new Date(),
                 paidBy: req.user.adminId ? 'Admin' : req.user.name || '',
                 note: 'Initial payment on supply creation',
@@ -186,6 +189,24 @@ const createSupply = async (req, res) => {
                     business: req.user.businessId
                 }));
                 await logStockMovements(movements, session);
+            }
+
+            // Record initial cash payment in cashbook
+            if (initialPaid > 0 && supplyPayMethod === 'cash') {
+                await recordCashEntry({
+                    type: 'vendor_payment',
+                    amount: initialPaid,
+                    direction: 'out',
+                    referenceType: 'supply',
+                    referenceId: supply._id,
+                    referenceNumber: `Supply #${supply.supplyNumber}`,
+                    description: `Supply payment - ${vendorDoc.name} (Supply #${supply.supplyNumber})`,
+                    note: 'Initial payment on supply creation',
+                    performedBy: req.user.adminId ? 'Admin' : req.user.name || '',
+                    performedById: req.user.id,
+                    businessId: req.user.businessId,
+                    session,
+                });
             }
 
             await session.commitTransaction();
@@ -456,17 +477,53 @@ const recordPayment = async (req, res) => {
             });
         }
 
+        const paymentMethod = method || 'cash';
+        const payAmount = Number(amount);
+
+        // Cash balance check
+        if (paymentMethod === 'cash') {
+            const latest = await CashBook.findOne({ business: req.user.businessId })
+                .sort({ createdAt: -1, entryNumber: -1 })
+                .select('runningBalance')
+                .lean();
+            const cashBalance = latest?.runningBalance ?? 0;
+            if (payAmount > cashBalance) {
+                return res.status(400).json({
+                    message: `Insufficient cash in hand. Available: Rs ${cashBalance.toLocaleString()}, Required: Rs ${payAmount.toLocaleString()}`,
+                });
+            }
+        }
+
+        const paidBy = req.user.adminId ? 'Admin' : req.user.name || '';
+
         supply.payments.push({
-            amount: Number(amount),
-            method: method || 'cash',
+            amount: payAmount,
+            method: paymentMethod,
             paidAt: new Date(),
-            paidBy: req.user.adminId ? 'Admin' : req.user.name || '',
+            paidBy,
             note: note || '',
             reference: reference || ''
         });
 
         // pre-save hook recalculates paidAmount from payments[], remaining + status
         await supply.save();
+
+        // Record in cashbook for cash payments
+        if (paymentMethod === 'cash') {
+            await recordCashEntry({
+                type: 'vendor_payment',
+                amount: payAmount,
+                direction: 'out',
+                referenceType: 'supply',
+                referenceId: supply._id,
+                referenceNumber: `Supply #${supply.supplyNumber}`,
+                description: `Supply payment - ${supply.vendorName || 'Vendor'} (Supply #${supply.supplyNumber})`,
+                note: note || '',
+                performedBy: paidBy,
+                performedById: req.user.id,
+                businessId: req.user.businessId,
+            });
+        }
 
         res.json(supply);
     } catch (error) {

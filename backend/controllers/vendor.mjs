@@ -1,6 +1,7 @@
 import Vendor from '../models/vendor.mjs';
 import Supply from '../models/supply.mjs';
 import mongoose from 'mongoose';
+import { recordCashEntry } from './cashbook.mjs';
 
 // Create vendor
 const createVendor = async (req, res) => {
@@ -381,6 +382,21 @@ const payVendor = async (req, res) => {
         const paymentMethod = method || 'cash';
         const paymentNote = note ? `FIFO vendor payment - ${note}` : 'FIFO vendor payment';
 
+        // Cash balance check — ensure enough cash in hand for cash payments
+        if (paymentMethod === 'cash') {
+            const CashBook = (await import('../models/cashbook.mjs')).default;
+            const latest = await CashBook.findOne({ business: req.user.businessId })
+                .sort({ createdAt: -1, entryNumber: -1 })
+                .select('runningBalance')
+                .lean();
+            const cashBalance = latest?.runningBalance ?? 0;
+            if (payAmount > cashBalance) {
+                return res.status(400).json({
+                    message: `Insufficient cash in hand. Available: Rs ${cashBalance.toLocaleString()}, Required: Rs ${payAmount.toLocaleString()}`,
+                });
+            }
+        }
+
         // Distribute payment across supplies in a transaction
         const session = await mongoose.startSession();
         const allocations = [];
@@ -420,6 +436,24 @@ const payVendor = async (req, res) => {
                 });
 
                 remainingToAllocate -= allocate;
+            }
+
+            // Record in cashbook (only for cash payments)
+            if (paymentMethod === 'cash') {
+                await recordCashEntry({
+                    type: 'vendor_payment',
+                    amount: payAmount,
+                    direction: 'out',
+                    referenceType: 'vendor',
+                    referenceId: vendor._id,
+                    referenceNumber: `Vendor: ${vendor.name}`,
+                    description: `Vendor payment to ${vendor.name} (${allocations.length} supplies)`,
+                    note: note || '',
+                    performedBy: paidBy,
+                    performedById: req.user.id,
+                    businessId: req.user.businessId,
+                    session,
+                });
             }
 
             await session.commitTransaction();

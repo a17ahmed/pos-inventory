@@ -21,6 +21,8 @@ import {
     FiPieChart,
     FiTruck,
     FiUserPlus,
+    FiLayers,
+    FiBook,
 } from 'react-icons/fi';
 
 const Layout = ({ children }) => {
@@ -77,7 +79,9 @@ const Layout = ({ children }) => {
         { path: '/receipts', icon: FiFileText, label: 'Receipts' },
         { path: '/returns', icon: FiRotateCcw, label: 'Returns' },
         { path: '/expenses', icon: FiDollarSign, label: 'Expenses' },
+        { path: '/cashbook', icon: FiBook, label: 'Cash Book' },
         { path: '/vendors', icon: FiTruck, label: 'Vendors' },
+        { path: '/inventory', icon: FiLayers, label: 'Inventory' },
         { path: '/reports', icon: FiPieChart, label: 'Reports' },
         { path: '/settings', icon: FiSettings, label: 'Settings' },
     ];
@@ -154,11 +158,11 @@ const Layout = ({ children }) => {
     const useSlimSidebar = isAdmin;
 
     return (
-        <div className="flex h-screen bg-slate-100 dark:bg-d-bg dark:bg-ambient">
+        <div className="flex h-screen bg-slate-100 dark:bg-d-bg dark:bg-ambient print:h-auto print:bg-white">
             {/* Slim Sidebar (Admin) - Pushes content when expanded */}
             {useSlimSidebar ? (
                 <aside
-                    className={`${isDark ? 'bg-[#0d0f17]' : 'bg-white'} border-r ${isDark ? 'border-[rgba(255,255,255,0.06)]' : 'border-slate-200'} flex flex-col items-center py-5 relative z-10 flex-shrink-0 overflow-hidden`}
+                    className={`${isDark ? 'bg-[#0d0f17]' : 'bg-white'} border-r ${isDark ? 'border-[rgba(255,255,255,0.06)]' : 'border-slate-200'} flex flex-col items-center py-5 relative z-10 flex-shrink-0 overflow-hidden print:hidden`}
                     style={{
                         width: sidebarExpanded ? '200px' : '66px',
                         transition: 'width 0.3s cubic-bezier(0.4, 0, 0.2, 1)'
@@ -312,7 +316,7 @@ const Layout = ({ children }) => {
                 </aside>
             ) : (
                 /* Standard Sidebar (Employee or Light Mode) */
-                <aside className="w-60 bg-white dark:bg-d-card border-r border-slate-200 dark:border-d-border flex flex-col animate-fade-slide-left relative z-10 flex-shrink-0">
+                <aside className="w-60 bg-white dark:bg-d-card border-r border-slate-200 dark:border-d-border flex flex-col animate-fade-slide-left relative z-10 flex-shrink-0 print:hidden">
                     {/* macOS Traffic Light Safe Area */}
                     {isMac && <div className="h-8 flex-shrink-0 app-drag-region" />}
 
@@ -412,7 +416,7 @@ const Layout = ({ children }) => {
             )}
 
             {/* Main content */}
-            <main className={`flex-1 overflow-hidden relative z-5 ${isMac ? 'pt-8' : ''}`}>
+            <main className={`flex-1 overflow-hidden print:overflow-visible relative z-5 ${isMac ? 'pt-8' : ''}`}>
                 {children}
             </main>
         </div>

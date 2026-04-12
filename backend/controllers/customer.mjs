@@ -1,6 +1,7 @@
 import Customer from '../models/customer.mjs';
 import Bill from '../models/bill.mjs';
 import mongoose from 'mongoose';
+import { recordCashEntry } from './cashbook.mjs';
 
 // Create or get customer (upsert by phone + business)
 export const createOrGetCustomer = async (req, res) => {
@@ -410,6 +411,24 @@ export const collectFromCustomer = async (req, res) => {
                 });
 
                 remainingToAllocate -= allocate;
+            }
+
+            // Record in cashbook (only for cash collections)
+            if (paymentMethod === 'cash') {
+                await recordCashEntry({
+                    type: 'sale_collection',
+                    amount: payAmount,
+                    direction: 'in',
+                    referenceType: 'customer',
+                    referenceId: customer._id,
+                    referenceNumber: `Customer: ${customer.name}`,
+                    description: `Collection from ${customer.name} (${allocations.length} bills)`,
+                    note: note || '',
+                    performedBy: receivedByName,
+                    performedById: req.user.id,
+                    businessId: req.user.businessId,
+                    session,
+                });
             }
 
             await session.commitTransaction();

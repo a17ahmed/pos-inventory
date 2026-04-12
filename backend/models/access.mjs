@@ -80,6 +80,12 @@ const accessSchema = new Schema(
                 resetPassword: { type: Boolean, default: false }
             },
 
+            // Cash Management
+            cashbook: {
+                view: { type: Boolean, default: false },
+                manage: { type: Boolean, default: false }
+            },
+
             // Reports / Analytics
             dashboard: {
                 view: { type: Boolean, default: true }
