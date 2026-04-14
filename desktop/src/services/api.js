@@ -1,6 +1,21 @@
 import axios from 'axios';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+const getBaseUrl = () => {
+    const saved = localStorage.getItem('serverUrl');
+    if (saved) return saved;
+    return import.meta.env.VITE_API_URL || 'http://localhost:3000';
+};
+
+let API_BASE_URL = getBaseUrl();
+
+export const setServerUrl = (url) => {
+    const cleaned = url.replace(/\/+$/, '');
+    localStorage.setItem('serverUrl', cleaned);
+    API_BASE_URL = cleaned;
+    api.defaults.baseURL = cleaned;
+};
+
+export const getServerUrl = () => API_BASE_URL;
 
 const api = axios.create({
     baseURL: API_BASE_URL,

@@ -207,7 +207,10 @@ app.use(mongoSanitize());
 app.use(hpp());
 app.use(xss());
 app.use(limiter);
-app.use(helmet());
+app.use(helmet({
+    contentSecurityPolicy: false,
+    crossOriginEmbedderPolicy: false,
+}));
 
 // Health check endpoint
 app.get('/health', (req, res) => {
@@ -319,8 +322,8 @@ io.on('connection', (socket) => {
 // Export io for use in controllers
 export { io };
 
-server.listen(port, () => {
-    console.log(`Inventory Server is Running at ${port}`);
+server.listen(port, '0.0.0.0', () => {
+    console.log(`Inventory Server is Running at 0.0.0.0:${port}`);
 });
 
 // Graceful shutdown

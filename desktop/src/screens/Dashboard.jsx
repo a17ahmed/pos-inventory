@@ -4,7 +4,9 @@ import { useBusiness } from '../context/BusinessContext';
 import { useAuth } from '../context/AuthContext';
 import { getProducts, getDeadStock, getLowStockProducts } from '../services/api/products';
 import { getReceiptStats, getTopProducts } from '../services/api/receipts';
-import { createBill, getSalesByProduct } from '../services/api/bills';
+import { createBill, getSalesByProduct, getSalesByCashier, getPaymentMethodReport } from '../services/api/bills';
+import { getEmployees } from '../services/api/employees';
+import { getSupplyStats } from '../services/api/supplies';
 import { searchCustomers } from '../services/api/customers';
 import { getExpenses as getApprovedExpenses } from '../services/api/expenses';
 import { getCashBalance } from '../services/api/cashbook';
@@ -33,6 +35,19 @@ import {
     FiPercent,
     FiChevronUp,
     FiChevronDown,
+    FiAlertTriangle,
+    FiPackage,
+    FiActivity,
+    FiAward,
+    FiAlertCircle,
+    FiZap,
+    FiUsers,
+    FiFileText,
+    FiTruck,
+    FiBookOpen,
+    FiPieChart,
+    FiGrid,
+    FiPrinter,
 } from 'react-icons/fi';
 import {
     LineChart,
@@ -52,6 +67,7 @@ import {
 const EmployeeDashboard = () => {
     const navigate = useNavigate();
     const { user } = useAuth();
+    const { business } = useBusiness();
 
     // Billing state
     const [billingActive, setBillingActive] = useState(true); // Always show billing view
@@ -625,6 +641,7 @@ const EmployeeDashboard = () => {
             customer: customer?._id || null,
             customerName: customer?.name || '',
             customerPhone: customer?.phone || '',
+            customerBalance: customer?.balance || 0,
         }));
         setShowCustomerPicker(false);
         setCustomerQuery('');
@@ -755,25 +772,26 @@ const EmployeeDashboard = () => {
                 saveBills([newBill], newBill.id);
             }
 
-            setSuccessData({
+            const sData = {
                 billNumber: response.data?.billNumber,
                 total: currentEffectiveTotal,
                 cashGiven: parseFloat(cashGiven || 0),
                 change: currentChangeAmount,
                 paymentMethod,
-            });
+                amountPaid,
+                bill: { ...bill, items: [...bill.items] },
+            };
+            setSuccessData(sData);
             setShowPaymentModal(false);
             setCashGiven('');
             setCreditPaidNow('');
             setPaymentMethod('cash');
             setShowSuccess(true);
 
-            loadData();
+            // Auto-print receipt
+            printReceipt(sData, sData.bill);
 
-            setTimeout(() => {
-                setShowSuccess(false);
-                setSuccessData(null);
-            }, 3000);
+            loadData();
         } catch (error) {
             console.error('Checkout error:', error);
             if (error.response?.status === 409) {
@@ -785,6 +803,149 @@ const EmployeeDashboard = () => {
         } finally {
             setProcessing(false);
         }
+    };
+
+    const printReceipt = (billData, bill) => {
+        const totals = getBillTotal(bill);
+        const storeName = business?.name || 'Store';
+        const storePhone = business?.phone || '';
+        const addr = business?.address;
+        const storeAddress = addr
+            ? [addr.street, addr.city, addr.state, addr.zipCode, addr.country].filter(Boolean).join(', ')
+            : '';
+        const currency = business?.currency || 'Rs.';
+        const cashierName = user?.name || '';
+        const billNo = billData.billNumber || '-';
+        const date = new Date().toLocaleString('en-PK', { dateStyle: 'medium', timeStyle: 'short' });
+        const customerName = bill.customerName || 'Walk-in';
+
+        const itemRows = bill.items.map(item => {
+            const lineTotal = item.price * item.qty - (Number(item.discountAmount) || 0);
+            return `<tr>
+                    <td style="text-align:left;padding:1px 0;font-size:11px;">${item.name}</td>
+                    <td style="text-align:center;font-size:11px;">${item.qty}</td>
+                    <td style="text-align:right;font-size:11px;">${item.price.toLocaleString()}</td>
+                    <td style="text-align:right;font-size:11px;">${lineTotal.toLocaleString()}</td>
+                </tr>`;
+        }).join('');
+
+        const receiptHTML = `<html>
+        <head>
+            <title>Receipt</title>
+            <style>
+                @page {
+                    margin: 0;
+                    size: 72mm auto;
+                }
+                * { margin: 0; padding: 0; box-sizing: border-box; }
+                html, body { width: 72mm; margin: 0; padding: 0; }
+                body { font-family: 'Courier New', monospace; padding: 4mm 2mm; font-size: 11px; color: #000; }
+                .center { text-align: center; }
+                .line { border-top: 1px dashed #000; margin: 4px 0; }
+                .store-name { font-size: 14px; font-weight: bold; }
+                table { width: 100%; border-collapse: collapse; }
+                th { text-align: left; font-size: 9px; border-bottom: 1px solid #000; padding: 1px 0; }
+                .total-row td { font-weight: bold; font-size: 12px; padding-top: 3px; }
+            </style>
+        </head>
+        <body>
+            <div class="center">
+                <div class="store-name">${storeName}</div>
+                ${storeAddress ? `<div style="font-size:9px;margin-top:1px;">${storeAddress}</div>` : ''}
+                ${storePhone ? `<div style="font-size:9px;">Tel: ${storePhone}</div>` : ''}
+            </div>
+            <div class="line"></div>
+            <div style="display:flex;justify-content:space-between;font-size:9px;">
+                <span>Bill# ${billNo}</span>
+                <span>${date}</span>
+            </div>
+            <div style="font-size:9px;">Customer: ${customerName}</div>
+            <div class="line"></div>
+            <table>
+                <thead>
+                    <tr>
+                        <th style="text-align:left;">Item</th>
+                        <th style="text-align:center;">Qty</th>
+                        <th style="text-align:right;">Price</th>
+                        <th style="text-align:right;">Total</th>
+                    </tr>
+                </thead>
+                <tbody>${itemRows}</tbody>
+            </table>
+            <div class="line"></div>
+            <table>
+                <tr>
+                    <td style="font-size:10px;">Subtotal</td>
+                    <td style="text-align:right;font-size:10px;">${currency} ${totals.subtotal.toLocaleString()}</td>
+                </tr>
+                ${totals.tax > 0 ? `<tr><td style="font-size:10px;">Tax</td><td style="text-align:right;font-size:10px;">${currency} ${totals.tax.toLocaleString()}</td></tr>` : ''}
+                ${totals.itemDiscounts > 0 ? `<tr><td style="font-size:10px;">Discount</td><td style="text-align:right;font-size:10px;">-${currency} ${totals.itemDiscounts.toLocaleString()}</td></tr>` : ''}
+                ${totals.billDiscount > 0 ? `<tr><td style="font-size:10px;">Bill Disc.</td><td style="text-align:right;font-size:10px;">-${currency} ${totals.billDiscount.toLocaleString()}</td></tr>` : ''}
+                <tr class="total-row">
+                    <td style="border-top:1px solid #000;padding-top:3px;">TOTAL</td>
+                    <td style="text-align:right;border-top:1px solid #000;padding-top:3px;">${currency} ${totals.total.toLocaleString()}</td>
+                </tr>
+                ${billData.paymentMethod === 'cash' && billData.cashGiven > 0 ? `
+                    <tr><td style="font-size:10px;">Cash</td><td style="text-align:right;font-size:10px;">${currency} ${billData.cashGiven.toLocaleString()}</td></tr>
+                    <tr><td style="font-size:10px;font-weight:bold;">Change</td><td style="text-align:right;font-size:10px;font-weight:bold;">${currency} ${billData.change.toLocaleString()}</td></tr>
+                ` : ''}
+            </table>
+            <div class="line"></div>
+            <div class="center" style="font-size:9px;">Payment: ${billData.paymentMethod.toUpperCase()}</div>
+            <div class="line"></div>
+            <div class="center" style="font-size:9px;margin-top:2px;">Thank you for your purchase!</div>
+        </body>
+        </html>`;
+
+        // Electron app — send structured data for direct ESC/POS printing
+        if (window.electronAPI?.printReceipt) {
+            window.electronAPI.printReceipt({
+                receiptData: {
+                    storeName, storeAddress, storePhone, cashierName,
+                    billNumber: billNo, date, customerName,
+                    customerBalance: bill.customerBalance || 0,
+                    items: bill.items.map(item => ({
+                        name: item.name,
+                        qty: item.qty,
+                        rate: item.price,
+                        amount: item.price * item.qty,
+                        discountAmount: item.discountAmount || 0,
+                    })),
+                    subtotal: totals.subtotal,
+                    tax: totals.tax,
+                    itemDiscounts: totals.itemDiscounts,
+                    billDiscount: totals.billDiscount,
+                    total: totals.total,
+                    paymentMethod: billData.paymentMethod,
+                    amountPaid: billData.amountPaid ?? 0,
+                    cashGiven: billData.cashGiven || 0,
+                    change: billData.change || 0,
+                    currency,
+                },
+            })
+                .then(result => {
+                    if (!result.success) console.error('Print failed:', result.error);
+                })
+                .catch(err => console.error('Print error:', err));
+            return;
+        }
+
+        // Browser fallback — hidden iframe
+        let printFrame = document.getElementById('receipt-print-frame');
+        if (!printFrame) {
+            printFrame = document.createElement('iframe');
+            printFrame.id = 'receipt-print-frame';
+            printFrame.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:0;height:0;border:none;';
+            document.body.appendChild(printFrame);
+        }
+        const frameDoc = printFrame.contentDocument || printFrame.contentWindow.document;
+        frameDoc.open();
+        frameDoc.write(receiptHTML);
+        frameDoc.close();
+        setTimeout(() => {
+            printFrame.contentWindow.focus();
+            printFrame.contentWindow.print();
+        }, 300);
     };
 
     const handleHoldBill = async () => {
@@ -1915,6 +2076,23 @@ const EmployeeDashboard = () => {
                                 )}
                             </div>
                         )}
+                        <div className="flex gap-3 mt-5">
+                            <button
+                                onClick={() => { setShowSuccess(false); setSuccessData(null); }}
+                                className="flex-1 py-2.5 rounded-xl bg-slate-100 dark:bg-[rgba(255,255,255,0.05)] text-slate-600 dark:text-d-muted text-sm font-medium hover:bg-slate-200 dark:hover:bg-[rgba(255,255,255,0.1)] transition-colors"
+                            >
+                                Close
+                            </button>
+                            {successData?.bill && (
+                                <button
+                                    onClick={() => printReceipt(successData, successData.bill)}
+                                    className="flex-1 py-2.5 rounded-xl bg-emerald-500 text-white text-sm font-medium hover:bg-emerald-600 transition-colors flex items-center justify-center gap-2"
+                                >
+                                    <FiPrinter size={14} />
+                                    Print Receipt
+                                </button>
+                            )}
+                        </div>
                     </div>
                 </div>
             )}
@@ -1941,15 +2119,35 @@ const AdminDashboard = () => {
     const [currentTime, setCurrentTime] = useState(new Date());
     const [showDetail, setShowDetail] = useState(null);
 
+    // Product intelligence
+    const [topSellingProducts, setTopSellingProducts] = useState([]);
+    const [salesByProductData, setSalesByProductData] = useState([]);
+    const [deadStockData, setDeadStockData] = useState({ products: [], summary: {} });
+    const [lowStockData, setLowStockData] = useState([]);
+    const [cashInHand, setCashInHand] = useState(0);
+    const [insightsLoading, setInsightsLoading] = useState(true);
+
+    // Employee & Payment data
+    const [cashierData, setCashierData] = useState([]);
+    const [employeeList, setEmployeeList] = useState([]);
+    const [paymentMethods, setPaymentMethods] = useState([]);
+    const [supplyStats, setSupplyStats] = useState(null);
+
     // Live clock
     useEffect(() => {
         const timer = setInterval(() => setCurrentTime(new Date()), 1000);
         return () => clearInterval(timer);
     }, []);
 
+    // Fetch financial data on filter change
     useEffect(() => {
         fetchDashboardData();
     }, [timeFilter]);
+
+    // Fetch product intelligence once on mount
+    useEffect(() => {
+        fetchInsights();
+    }, []);
 
     const fetchDashboardData = async () => {
         setLoading(true);
@@ -1962,15 +2160,18 @@ const AdminDashboard = () => {
                 case 'month': startDate = new Date(now.getFullYear(), now.getMonth(), 1); break;
             }
 
-            // Fetch stats + chart data in ONE call
-            const [statsRes, expensesRes] = await Promise.all([
+            const dateParams = { startDate: startDate.toISOString(), endDate: now.toISOString() };
+
+            const [statsRes, expensesRes, salesByProdRes, cashierRes, payMethodRes] = await Promise.all([
                 getReceiptStats({ filter: timeFilter, chart: 'true' }),
-                getApprovedExpenses({ status: 'approved' }).catch(() => ({ data: [] }))
+                getApprovedExpenses({ status: 'approved' }).catch(() => ({ data: [] })),
+                getSalesByProduct(dateParams).catch(() => ({ data: { products: [] } })),
+                getSalesByCashier(dateParams).catch(() => ({ data: { cashiers: [] } })),
+                getPaymentMethodReport(dateParams).catch(() => ({ data: { methods: [] } })),
             ]);
 
             const backendStats = statsRes.data;
 
-            // Calculate expenses for the period
             const allExpenses = Array.isArray(expensesRes.data) ? expensesRes.data : expensesRes.data?.expenses || [];
             const periodExpenses = allExpenses.filter(e => new Date(e.date || e.createdAt) >= startDate);
             const expenses = periodExpenses.reduce((sum, e) => sum + (e.amount || 0), 0);
@@ -1987,16 +2188,18 @@ const AdminDashboard = () => {
 
             setProfitLoss({
                 grossRevenue: backendStats.grossRevenue,
-                returns: backendStats.totalReturns,
+                returns: backendStats.totalRefunded || 0,
                 netRevenue: backendStats.netRevenue,
                 cogs: backendStats.totalCOGS,
                 grossProfit: backendStats.grossProfit,
-                expenses: expenses,
-                netProfit: netProfit,
-                profitMargin: profitMargin
+                expenses,
+                netProfit,
+                profitMargin
             });
 
-            // Use chart data from stats response (no separate receipt fetch needed)
+            setSalesByProductData(salesByProdRes.data?.products || []);
+            setCashierData(cashierRes.data?.cashiers || []);
+            setPaymentMethods(payMethodRes.data?.methods || payMethodRes.data || []);
             generateChartDataFromStats(backendStats.chartData || [], startDate, now, timeFilter);
         } catch (error) {
             console.error('Error fetching dashboard data:', error);
@@ -2005,8 +2208,34 @@ const AdminDashboard = () => {
         }
     };
 
-    // New: works with pre-aggregated chart data from stats endpoint
-    const generateChartDataFromStats = (chartItems, startDate, endDate, filter) => {
+    const fetchInsights = async () => {
+        setInsightsLoading(true);
+        try {
+            const [topRes, deadRes, lowRes, cashRes, empRes, supplyStatsRes] = await Promise.all([
+                getTopProducts(10).catch(() => ({ data: [] })),
+                getDeadStock(30).catch(() => ({ data: { deadStock: [], summary: {} } })),
+                getLowStockProducts().catch(() => ({ data: [] })),
+                getCashBalance().catch(() => ({ data: { balance: 0 } })),
+                getEmployees().catch(() => ({ data: [] })),
+                getSupplyStats().catch(() => ({ data: null })),
+            ]);
+            setTopSellingProducts(Array.isArray(topRes.data) ? topRes.data : []);
+            setDeadStockData({
+                products: deadRes.data?.deadStock || [],
+                summary: deadRes.data?.summary || {},
+            });
+            setLowStockData(Array.isArray(lowRes.data) ? lowRes.data : []);
+            setCashInHand(cashRes.data?.balance ?? 0);
+            setEmployeeList(Array.isArray(empRes.data) ? empRes.data : empRes.data?.employees || []);
+            setSupplyStats(supplyStatsRes.data || null);
+        } catch (error) {
+            console.error('Error fetching insights:', error);
+        } finally {
+            setInsightsLoading(false);
+        }
+    };
+
+    const generateChartDataFromStats = (chartItems, startDate, _endDate, filter) => {
         const dataMap = {};
         chartItems.forEach(item => {
             dataMap[item._id] = { revenue: item.revenue, orders: item.orders };
@@ -2053,62 +2282,23 @@ const AdminDashboard = () => {
         setPeakData({ value: maxSales, time: maxTime });
     };
 
-    // Legacy: works with raw receipt arrays (kept for compatibility)
-    const generateChartData = (receipts, startDate, endDate, filter) => {
-        const data = [];
-        let maxSales = 0;
-        let maxTime = '';
+    // Derived: best margin products
+    const bestMarginProducts = useMemo(() => {
+        return salesByProductData
+            .filter(p => p.transactionCount >= 2 && p.netRevenue > 0)
+            .map(p => ({ ...p, margin: (p.totalProfit / p.netRevenue) * 100 }))
+            .sort((a, b) => b.margin - a.margin)
+            .slice(0, 5);
+    }, [salesByProductData]);
 
-        if (filter === 'today') {
-            for (let h = 0; h < 24; h++) {
-                const hourReceipts = receipts.filter(r => new Date(r.createdAt).getHours() === h);
-                const hourSales = hourReceipts.reduce((sum, r) => sum + (r.totalBill || 0), 0);
-                const hourOrders = hourReceipts.length;
-                data.push({ name: `${h}:00`, sales: hourSales, orders: hourOrders });
-                if (hourSales > maxSales) {
-                    maxSales = hourSales;
-                    maxTime = `${h}:00`;
-                }
-            }
-        } else if (filter === 'week') {
-            for (let i = 0; i < 7; i++) {
-                const day = new Date(startDate);
-                day.setDate(startDate.getDate() + i);
-                const dayReceipts = receipts.filter(r => new Date(r.createdAt).toDateString() === day.toDateString());
-                const daySales = dayReceipts.reduce((sum, r) => sum + (r.totalBill || 0), 0);
-                const dayName = day.toLocaleDateString('en', { weekday: 'short' });
-                data.push({ name: dayName, sales: daySales, orders: dayReceipts.length });
-                if (daySales > maxSales) {
-                    maxSales = daySales;
-                    maxTime = dayName;
-                }
-            }
-        } else {
-            for (let w = 0; w < 5; w++) {
-                const weekStart = new Date(startDate);
-                weekStart.setDate(startDate.getDate() + w * 7);
-                const weekEnd = new Date(weekStart);
-                weekEnd.setDate(weekStart.getDate() + 7);
-                const weekReceipts = receipts.filter(r => { const d = new Date(r.createdAt); return d >= weekStart && d < weekEnd; });
-                const weekSales = weekReceipts.reduce((sum, r) => sum + (r.totalBill || 0), 0);
-                data.push({ name: `W${w + 1}`, sales: weekSales, orders: weekReceipts.length });
-                if (weekSales > maxSales) {
-                    maxSales = weekSales;
-                    maxTime = `W${w + 1}`;
-                }
-            }
-        }
-        setChartData(data);
-        setPeakData({ value: maxSales, time: maxTime });
-    };
+    // Derived: peak insights from chart data
+    const peakInsights = useMemo(() => {
+        if (!chartData.length) return [];
+        const sorted = [...chartData].filter(d => d.sales > 0).sort((a, b) => b.sales - a.sales);
+        return sorted.slice(0, 3);
+    }, [chartData]);
 
-    // Format currency - full amount, no abbreviation
-    const formatCurrency = (amount) => {
-        const num = amount || 0;
-        return num.toLocaleString();
-    };
-
-    // Format currency with abbreviation for charts only
+    const formatCurrency = (amount) => (amount || 0).toLocaleString();
     const formatCurrencyShort = (amount) => {
         const num = amount || 0;
         if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`;
@@ -2116,8 +2306,9 @@ const AdminDashboard = () => {
         return num.toLocaleString();
     };
 
-    // Detail Popup Component
-    // Memoized detail popup data to prevent re-renders
+    const currency = business?.currency || 'Rs.';
+
+    // Detail Popup
     const detailPopupData = useMemo(() => ({
         grossRevenue: {
             title: 'Gross Revenue Calculation',
@@ -2132,14 +2323,14 @@ const AdminDashboard = () => {
             title: 'Net Profit Calculation',
             items: [
                 { label: 'Gross Revenue', value: profitLoss.grossRevenue, color: '#34e8a1', sign: '' },
-                { label: 'Returns/Refunds', value: profitLoss.returns, color: '#ff6b6b', sign: '−' },
+                { label: 'Returns/Refunds', value: profitLoss.returns, color: '#ff6b6b', sign: '\u2212' },
                 { label: 'Net Revenue', value: profitLoss.netRevenue, color: '#5b9cf6', sign: '=' },
-                { label: 'Cost of Goods', value: profitLoss.cogs, color: '#ff6b6b', sign: '−' },
+                { label: 'Cost of Goods', value: profitLoss.cogs, color: '#ff6b6b', sign: '\u2212' },
                 { label: 'Gross Profit', value: profitLoss.grossProfit, color: '#ffd264', sign: '=' },
-                { label: 'Expenses', value: profitLoss.expenses, color: '#ff6b6b', sign: '−' },
+                { label: 'Expenses', value: profitLoss.expenses, color: '#ff6b6b', sign: '\u2212' },
                 { label: 'Net Profit', value: profitLoss.netProfit, color: profitLoss.netProfit >= 0 ? '#34e8a1' : '#ff6b6b', sign: '=', isBold: true },
             ],
-            formula: 'Revenue − Returns − COGS − Expenses = Net Profit'
+            formula: 'Revenue \u2212 Returns \u2212 COGS \u2212 Expenses = Net Profit'
         },
         cogs: {
             title: 'Cost of Goods Sold',
@@ -2147,7 +2338,7 @@ const AdminDashboard = () => {
                 { label: 'Total COGS', value: profitLoss.cogs, color: '#ff6b6b' },
                 { label: 'As % of Revenue', value: `${profitLoss.grossRevenue > 0 ? ((profitLoss.cogs / profitLoss.grossRevenue) * 100).toFixed(1) : 0}%`, isText: true },
             ],
-            formula: 'Sum of (costPrice × quantity) for all sold items'
+            formula: 'Sum of (costPrice \u00d7 quantity) for all sold items'
         },
         avgOrder: {
             title: 'Average Order Value',
@@ -2156,36 +2347,21 @@ const AdminDashboard = () => {
                 { label: 'Total Orders', value: `${stats.totalOrders} orders`, isText: true },
                 { label: 'Avg Order Value', value: stats.avgOrderValue, color: '#ffd264', isBold: true },
             ],
-            formula: 'Gross Revenue ÷ Number of Orders'
+            formula: 'Gross Revenue \u00f7 Number of Orders'
         },
     }), [stats, profitLoss]);
 
-    // Render detail popup - separate from main component to prevent clock re-renders
     const renderDetailPopup = () => {
         if (!showDetail) return null;
         const detail = detailPopupData[showDetail];
         if (!detail) return null;
-
         return (
-            <div
-                className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm animate-fade-in"
-                onClick={() => setShowDetail(null)}
-            >
-                <div
-                    className="bg-[#0d0f17] border border-[rgba(255,255,255,0.1)] rounded-2xl p-6 min-w-[320px] max-w-[400px] shadow-2xl"
-                    onClick={(e) => e.stopPropagation()}
-                    style={{ animation: 'popIn 0.2s ease-out forwards' }}
-                >
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={() => setShowDetail(null)}>
+                <div className="bg-[#0d0f17] border border-[rgba(255,255,255,0.1)] rounded-2xl p-6 min-w-[320px] max-w-[400px] shadow-2xl" onClick={(e) => e.stopPropagation()} style={{ animation: 'popIn 0.2s ease-out forwards' }}>
                     <div className="flex items-center justify-between mb-4">
                         <h3 className="font-bebas text-xl tracking-wide text-d-heading">{detail.title}</h3>
-                        <button
-                            onClick={() => setShowDetail(null)}
-                            className="w-8 h-8 rounded-lg bg-[rgba(255,255,255,0.05)] hover:bg-[rgba(255,255,255,0.1)] flex items-center justify-center text-d-muted hover:text-white transition-colors"
-                        >
-                            ×
-                        </button>
+                        <button onClick={() => setShowDetail(null)} className="w-8 h-8 rounded-lg bg-[rgba(255,255,255,0.05)] hover:bg-[rgba(255,255,255,0.1)] flex items-center justify-center text-d-muted hover:text-white transition-colors">&times;</button>
                     </div>
-
                     <div className="space-y-3 mb-4">
                         {detail.items.map((item, idx) => (
                             <div key={idx} className={`flex items-center justify-between py-2 ${item.isBold ? 'border-t border-[rgba(255,255,255,0.1)] pt-3' : ''}`}>
@@ -2199,24 +2375,16 @@ const AdminDashboard = () => {
                             </div>
                         ))}
                     </div>
-
                     <div className="bg-[rgba(255,210,100,0.05)] border border-[rgba(255,210,100,0.15)] rounded-lg p-3">
-                        <p className="text-[11px] text-d-muted font-mono-dm">
-                            <span className="text-d-accent">Formula:</span> {detail.formula}
-                        </p>
+                        <p className="text-[11px] text-d-muted font-mono-dm"><span className="text-d-accent">Formula:</span> {detail.formula}</p>
                     </div>
                 </div>
             </div>
         );
     };
 
-    const formatDate = (date) => {
-        return date.toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' }).toUpperCase();
-    };
-
-    const formatTime = (date) => {
-        return date.toLocaleTimeString('en-PK', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    };
+    const formatDate = (date) => date.toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' }).toUpperCase();
+    const formatTime = (date) => date.toLocaleTimeString('en-PK', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
     if (loading) {
         return (
@@ -2229,293 +2397,536 @@ const AdminDashboard = () => {
         );
     }
 
-    const currency = business?.currency || 'Rs.';
-
     return (
-        <div className="h-full flex flex-col bg-slate-50 dark:bg-d-bg overflow-hidden grain-overlay">
+        <div className="h-full flex flex-col bg-slate-50 dark:bg-d-bg grain-overlay">
             {/* Topbar */}
-            <div className="flex items-center gap-4 px-7 py-4 border-b border-slate-200 dark:border-[rgba(255,255,255,0.06)] backdrop-blur-xl bg-white/80 dark:bg-[rgba(7,8,13,0.65)] flex-shrink-0">
+            <div className="flex items-center gap-4 px-7 py-3 border-b border-slate-200 dark:border-[rgba(255,255,255,0.06)] backdrop-blur-xl bg-white/80 dark:bg-[rgba(7,8,13,0.65)] flex-shrink-0">
                 <div>
-                    <h1 className="font-bebas text-[30px] tracking-[0.08em] text-slate-800 dark:text-d-heading leading-none">DASHBOARD</h1>
+                    <h1 className="font-bebas text-[26px] tracking-[0.08em] text-slate-800 dark:text-d-heading leading-none">DASHBOARD</h1>
                     <p className="font-mono-dm text-[10px] text-slate-500 dark:text-d-faint tracking-[0.06em] mt-0.5">
-                        {formatDate(currentTime)} · {formatTime(currentTime)}
+                        {formatDate(currentTime)} &middot; {formatTime(currentTime)}
                     </p>
                 </div>
-
-                {/* Live Chip */}
-                <div className="flex items-center gap-2 bg-[rgba(52,232,161,0.07)] border border-[rgba(52,232,161,0.2)] rounded-full px-3 py-1.5 ml-1">
+                <div className="flex items-center gap-2 bg-[rgba(52,232,161,0.07)] border border-[rgba(52,232,161,0.2)] rounded-full px-3 py-1 ml-1">
                     <div className="w-1.5 h-1.5 rounded-full bg-d-green shadow-[0_0_8px_#34e8a1] animate-blink" />
                     <span className="font-mono-dm text-[10px] font-medium text-d-green tracking-[0.06em]">LIVE</span>
                 </div>
-
                 <div className="ml-auto flex items-center gap-3">
                     <span className="text-sm text-slate-500 dark:text-d-muted">
-                        Welcome back, <span className="text-amber-600 dark:text-d-accent font-semibold">{business?.name || 'Histore'}</span>
+                        Welcome back, <span className="text-amber-600 dark:text-d-accent font-semibold">{business?.name || 'Store'}</span>
                     </span>
-
-                    {/* Period Tabs */}
                     <div className="flex bg-slate-100 dark:bg-[#0d0f17] border border-slate-200 dark:border-[rgba(255,255,255,0.06)] rounded-xl p-1 gap-0.5">
-                        {['today', 'week', 'month'].map((filter) => (
-                            <button
-                                key={filter}
-                                onClick={() => setTimeFilter(filter)}
+                        {['today', 'week', 'month'].map((f) => (
+                            <button key={f} onClick={() => setTimeFilter(f)}
                                 className={`px-4 py-1.5 rounded-lg text-xs font-semibold tracking-[0.03em] transition-all duration-200 ${
-                                    timeFilter === filter
+                                    timeFilter === f
                                         ? 'bg-gradient-to-r from-d-accent to-d-accent-s text-d-bg shadow-[0_4px_16px_rgba(255,185,50,0.3)]'
                                         : 'text-slate-500 dark:text-d-muted hover:text-slate-800 dark:hover:text-[#f0f2f8] hover:bg-slate-200/50 dark:hover:bg-d-glass'
                                 }`}
                             >
-                                {filter === 'today' ? 'Today' : filter === 'week' ? 'Week' : 'Month'}
+                                {f === 'today' ? 'Today' : f === 'week' ? 'Week' : 'Month'}
                             </button>
                         ))}
                     </div>
                 </div>
             </div>
 
-            {/* Bento Grid */}
-            <div className="flex-1 overflow-y-auto p-4 dark-scrollbar">
-                <div className="grid grid-cols-12 grid-rows-[110px_110px_1fr] gap-2.5 min-h-[calc(100vh-130px)]">
+            {/* Scrollable Content */}
+            <div className="flex-1 overflow-y-auto px-5 py-4 space-y-3 dark-scrollbar">
 
-                    {/* GROSS REVENUE - Tall Left Card */}
-                    <div
-                        className="col-span-3 row-span-2 bg-slate-100 dark:bg-[#0d0f17] dark:bg-gradient-to-br dark:from-[rgba(255,210,100,0.06)] dark:to-[#0d0f17] rounded-2xl p-4 border border-slate-200 dark:border-[rgba(255,255,255,0.06)] relative overflow-hidden flex flex-col justify-between animate-bento-in hover:translate-y-[-2px] hover:shadow-[0_12px_40px_rgba(0,0,0,0.4)] hover:border-[rgba(255,210,100,0.22)] transition-all duration-300 group cursor-pointer"
-                        onClick={() => setShowDetail('grossRevenue')}
-                    >
-                        {/* Deco rings */}
-                        <div className="absolute bottom-[-20px] right-[-20px] w-[100px] h-[100px] rounded-full border border-[rgba(255,210,100,0.07)] pointer-events-none">
-                            <div className="absolute inset-[12px] rounded-full border border-[rgba(255,210,100,0.05)]" />
-                        </div>
-
-                        <div className="flex items-center gap-1.5">
+                {/* ─── ROW 1: KPI Cards ─── */}
+                <div className="grid grid-cols-5 gap-2.5">
+                    {/* Gross Revenue */}
+                    <div onClick={() => setShowDetail('grossRevenue')} className="bg-slate-100 dark:bg-[#0d0f17] rounded-xl p-3.5 border border-slate-200 dark:border-[rgba(255,255,255,0.06)] cursor-pointer hover:border-[rgba(255,210,100,0.22)] transition-all">
+                        <div className="flex items-center gap-1.5 mb-1">
                             <div className="w-1.5 h-1.5 rounded-full bg-d-accent shadow-[0_0_6px_#ffd264]" />
-                            <span className="text-[9px] font-bold tracking-[0.1em] uppercase text-slate-500 dark:text-d-faint">Gross Revenue</span>
+                            <span className="text-[9px] font-bold tracking-[0.1em] uppercase text-slate-500 dark:text-d-faint">Revenue</span>
                         </div>
-
-                        <div>
-                            <div className="font-bebas text-[48px] leading-none tracking-[-0.01em] text-amber-600 dark:text-d-accent dark:drop-shadow-[0_0_40px_rgba(255,200,60,0.3)]">
-                                {currency} {formatCurrency(stats.totalSales)}
-                            </div>
-                            <div className="font-mono-dm text-[9px] text-slate-500 dark:text-d-muted tracking-[0.06em] mt-0.5">
-                                Pakistani Rupee · PKR
-                            </div>
-                            <div className={`inline-flex items-center gap-1 font-mono-dm text-[9px] font-semibold tracking-[0.04em] px-2 py-0.5 rounded-full mt-2 ${
-                                stats.growth >= 0
-                                    ? 'bg-[rgba(52,232,161,0.1)] text-d-green border border-[rgba(52,232,161,0.2)]'
-                                    : 'bg-[rgba(255,107,107,0.09)] text-d-red border border-[rgba(255,107,107,0.18)]'
-                            }`}>
-                                {stats.growth >= 0 ? '↑' : '↓'} {Math.abs(stats.growth).toFixed(1)}% vs last period
-                            </div>
+                        <div className="font-bebas text-[28px] leading-none text-amber-600 dark:text-d-accent">{currency} {formatCurrency(stats.totalSales)}</div>
+                        <div className={`inline-flex items-center gap-1 font-mono-dm text-[9px] font-semibold px-1.5 py-0.5 rounded-full mt-1.5 ${
+                            stats.growth >= 0 ? 'bg-[rgba(52,232,161,0.1)] text-d-green border border-[rgba(52,232,161,0.2)]' : 'bg-[rgba(255,107,107,0.09)] text-d-red border border-[rgba(255,107,107,0.18)]'
+                        }`}>
+                            {stats.growth >= 0 ? '\u2191' : '\u2193'} {Math.abs(stats.growth).toFixed(1)}%
                         </div>
                     </div>
 
-                    {/* TOTAL ORDERS */}
-                    <div className="col-span-3 bg-slate-100 dark:bg-[#0d0f17] rounded-2xl p-4 border border-slate-200 dark:border-[rgba(255,255,255,0.06)] relative overflow-hidden animate-bento-in hover:translate-y-[-2px] hover:shadow-[0_12px_40px_rgba(0,0,0,0.4)] hover:border-[rgba(91,156,246,0.22)] transition-all duration-300" style={{ animationDelay: '0.1s' }}>
-                        <div className="absolute top-3 right-3 w-7 h-7 rounded-lg bg-[rgba(91,156,246,0.1)] border border-[rgba(91,156,246,0.22)] flex items-center justify-center">
-                            <FiShoppingCart size={13} className="text-d-blue" />
-                        </div>
-                        <div className="flex items-center gap-1.5">
-                            <div className="w-1.5 h-1.5 rounded-full bg-d-blue" />
-                            <span className="text-[9px] font-bold tracking-[0.1em] uppercase text-slate-500 dark:text-d-faint">Total Orders</span>
-                        </div>
-                        <div className="font-bebas text-[34px] leading-tight tracking-[0.02em] text-d-blue mt-1">
-                            {stats.totalOrders}
-                        </div>
-                        <div className="inline-flex items-center gap-1 font-mono-dm text-[9px] font-semibold tracking-[0.04em] px-2 py-0.5 rounded-full mt-1 bg-d-glass text-slate-500 dark:text-d-muted border border-slate-200 dark:border-[rgba(255,255,255,0.06)]">
-                            placed {timeFilter}
-                        </div>
-                    </div>
-
-                    {/* AVG ORDER VALUE */}
-                    <div
-                        className="col-span-3 bg-slate-100 dark:bg-[#0d0f17] rounded-2xl p-4 border border-slate-200 dark:border-[rgba(255,255,255,0.06)] relative overflow-hidden animate-bento-in hover:translate-y-[-2px] hover:shadow-[0_12px_40px_rgba(0,0,0,0.4)] hover:border-[rgba(52,232,161,0.22)] transition-all duration-300 cursor-pointer group"
-                        style={{ animationDelay: '0.14s' }}
-                        onClick={() => setShowDetail('avgOrder')}
-                    >
-                        <div className="absolute top-3 right-3 w-7 h-7 rounded-lg bg-[rgba(52,232,161,0.1)] border border-[rgba(52,232,161,0.22)] flex items-center justify-center">
-                            <FiTrendingUp size={13} className="text-d-green" />
-                        </div>
-                        <div className="flex items-center gap-1.5">
-                            <div className="w-1.5 h-1.5 rounded-full bg-d-green" />
-                            <span className="text-[9px] font-bold tracking-[0.1em] uppercase text-slate-500 dark:text-d-faint">Avg Order Value</span>
-                        </div>
-                        <div className="font-bebas text-[34px] leading-tight tracking-[0.02em] text-d-green mt-1">
-                            {currency} {formatCurrency(stats.avgOrderValue)}
-                        </div>
-                        <div className="inline-flex items-center gap-1 font-mono-dm text-[9px] font-semibold tracking-[0.04em] px-2 py-0.5 rounded-full mt-1 bg-[rgba(52,232,161,0.1)] text-d-green border border-[rgba(52,232,161,0.2)]">
-                            ↑ per transaction
-                        </div>
-                    </div>
-
-                    {/* TIME PERIOD */}
-                    <div className="col-span-3 bg-slate-100 dark:bg-[#0d0f17] rounded-2xl p-4 border border-slate-200 dark:border-[rgba(255,255,255,0.06)] relative overflow-hidden animate-bento-in hover:translate-y-[-2px] hover:shadow-[0_12px_40px_rgba(0,0,0,0.4)] hover:border-[rgba(192,132,252,0.3)] transition-all duration-300" style={{ animationDelay: '0.17s' }}>
-                        <div className="absolute top-3 right-3 w-7 h-7 rounded-lg bg-[rgba(192,132,252,0.1)] border border-[rgba(192,132,252,0.22)] flex items-center justify-center">
-                            <FiCalendar size={13} className="text-[#c084fc]" />
-                        </div>
-                        <div className="flex items-center gap-1.5">
-                            <div className="w-1.5 h-1.5 rounded-full bg-[#c084fc]" />
-                            <span className="text-[9px] font-bold tracking-[0.1em] uppercase text-slate-500 dark:text-d-faint">Period</span>
-                        </div>
-                        <div className="font-bebas text-[28px] leading-tight tracking-[0.02em] text-[#c084fc] mt-1">
-                            {timeFilter === 'today' ? 'TODAY' : timeFilter === 'week' ? 'WEEK' : 'MONTH'}
-                        </div>
-                    </div>
-
-                    {/* NET PROFIT */}
-                    <div
-                        className="col-span-3 bg-[rgba(52,232,161,0.04)] dark:bg-[rgba(52,232,161,0.04)] rounded-2xl p-3 border border-[rgba(52,232,161,0.12)] relative overflow-hidden animate-bento-in hover:translate-y-[-2px] hover:shadow-[0_12px_40px_rgba(0,0,0,0.4)] hover:border-[rgba(52,232,161,0.22)] transition-all duration-300 cursor-pointer group"
-                        style={{ animationDelay: '0.12s' }}
-                        onClick={() => setShowDetail('netProfit')}
-                    >
-                        <div className="flex items-center gap-1.5">
+                    {/* Net Profit */}
+                    <div onClick={() => setShowDetail('netProfit')} className="bg-[rgba(52,232,161,0.04)] rounded-xl p-3.5 border border-[rgba(52,232,161,0.12)] cursor-pointer hover:border-[rgba(52,232,161,0.22)] transition-all">
+                        <div className="flex items-center gap-1.5 mb-1">
                             <div className="w-1.5 h-1.5 rounded-full bg-d-green shadow-[0_0_6px_#34e8a1]" />
                             <span className="text-[9px] font-bold tracking-[0.1em] uppercase text-slate-500 dark:text-d-faint">Net Profit</span>
                         </div>
-                        <div className={`font-bebas text-[28px] leading-tight tracking-[0.02em] mt-1 ${profitLoss.netProfit >= 0 ? 'text-d-green' : 'text-d-red'}`}>
+                        <div className={`font-bebas text-[28px] leading-none ${profitLoss.netProfit >= 0 ? 'text-d-green' : 'text-d-red'}`}>
                             {currency} {formatCurrency(Math.abs(profitLoss.netProfit))}
                         </div>
-                        <div className={`inline-flex items-center gap-1 font-mono-dm text-[9px] font-semibold tracking-[0.04em] px-2 py-0.5 rounded-full mt-1 ${
-                            profitLoss.netProfit >= 0
-                                ? 'bg-[rgba(52,232,161,0.1)] text-d-green border border-[rgba(52,232,161,0.2)]'
-                                : 'bg-[rgba(255,107,107,0.09)] text-d-red border border-[rgba(255,107,107,0.18)]'
+                        <div className={`inline-flex items-center font-mono-dm text-[9px] font-semibold px-1.5 py-0.5 rounded-full mt-1.5 ${
+                            profitLoss.netProfit >= 0 ? 'bg-[rgba(52,232,161,0.1)] text-d-green border border-[rgba(52,232,161,0.2)]' : 'bg-[rgba(255,107,107,0.09)] text-d-red border border-[rgba(255,107,107,0.18)]'
                         }`}>
                             {profitLoss.profitMargin.toFixed(0)}% margin
                         </div>
                     </div>
 
-                    {/* COGS */}
-                    <div
-                        className="col-span-2 bg-slate-100 dark:bg-[#0d0f17] rounded-2xl p-3 border border-slate-200 dark:border-[rgba(255,255,255,0.06)] relative overflow-hidden animate-bento-in hover:translate-y-[-2px] hover:shadow-[0_12px_40px_rgba(0,0,0,0.4)] hover:border-[rgba(255,107,107,0.3)] transition-all duration-300 cursor-pointer"
-                        style={{ animationDelay: '0.15s' }}
-                        onClick={() => setShowDetail('cogs')}
-                    >
-                        <div className="flex items-center gap-1">
-                            <div className="w-1.5 h-1.5 rounded-full bg-d-red" />
-                            <span className="text-[8px] font-bold tracking-[0.08em] uppercase text-slate-500 dark:text-d-faint">COGS</span>
+                    {/* Total Orders */}
+                    <div className="bg-slate-100 dark:bg-[#0d0f17] rounded-xl p-3.5 border border-slate-200 dark:border-[rgba(255,255,255,0.06)]">
+                        <div className="flex items-center gap-1.5 mb-1">
+                            <div className="w-1.5 h-1.5 rounded-full bg-d-blue" />
+                            <span className="text-[9px] font-bold tracking-[0.1em] uppercase text-slate-500 dark:text-d-faint">Orders</span>
                         </div>
-                        <div className="font-bebas text-[22px] leading-tight tracking-[0.02em] text-slate-400 dark:text-d-muted mt-1">
-                            – {currency} {formatCurrency(profitLoss.cogs)}
-                        </div>
+                        <div className="font-bebas text-[28px] leading-none text-d-blue">{stats.totalOrders}</div>
+                        <div className="font-mono-dm text-[9px] text-slate-500 dark:text-d-muted mt-1.5">avg {currency} {formatCurrency(stats.avgOrderValue)}</div>
                     </div>
 
-                    {/* RETURNS */}
-                    <div className="col-span-2 bg-slate-100 dark:bg-[#0d0f17] rounded-2xl p-3 border border-slate-200 dark:border-[rgba(255,255,255,0.06)] relative overflow-hidden animate-bento-in hover:translate-y-[-2px] hover:shadow-[0_12px_40px_rgba(0,0,0,0.4)] hover:border-[rgba(255,107,107,0.25)] transition-all duration-300" style={{ animationDelay: '0.18s' }}>
-                        <div className="flex items-center gap-1">
-                            <div className="w-1.5 h-1.5 rounded-full bg-d-red" />
-                            <span className="text-[8px] font-bold tracking-[0.08em] uppercase text-slate-500 dark:text-d-faint">Returns</span>
+                    {/* Cash in Hand */}
+                    <div className="bg-slate-100 dark:bg-[#0d0f17] rounded-xl p-3.5 border border-slate-200 dark:border-[rgba(255,255,255,0.06)]">
+                        <div className="flex items-center gap-1.5 mb-1">
+                            <div className="w-1.5 h-1.5 rounded-full bg-[#c084fc]" />
+                            <span className="text-[9px] font-bold tracking-[0.1em] uppercase text-slate-500 dark:text-d-faint">Cash in Hand</span>
                         </div>
-                        <div className="font-bebas text-[22px] leading-tight tracking-[0.02em] text-slate-400 dark:text-d-muted mt-1">
-                            – {currency} {formatCurrency(profitLoss.returns)}
-                        </div>
+                        <div className="font-bebas text-[28px] leading-none text-[#c084fc]">{currency} {formatCurrency(cashInHand)}</div>
                     </div>
 
-                    {/* EXPENSES */}
-                    <div className="col-span-2 bg-slate-100 dark:bg-[#0d0f17] rounded-2xl p-3 border border-slate-200 dark:border-[rgba(255,255,255,0.06)] relative overflow-hidden animate-bento-in hover:translate-y-[-2px] hover:shadow-[0_12px_40px_rgba(0,0,0,0.4)] hover:border-[rgba(255,107,107,0.25)] transition-all duration-300" style={{ animationDelay: '0.21s' }}>
-                        <div className="flex items-center gap-1">
+                    {/* P&L Mini */}
+                    <div onClick={() => setShowDetail('cogs')} className="bg-slate-100 dark:bg-[#0d0f17] rounded-xl p-3.5 border border-slate-200 dark:border-[rgba(255,255,255,0.06)] cursor-pointer hover:border-[rgba(255,107,107,0.25)] transition-all">
+                        <div className="flex items-center gap-1.5 mb-1">
                             <div className="w-1.5 h-1.5 rounded-full bg-d-red" />
-                            <span className="text-[8px] font-bold tracking-[0.08em] uppercase text-slate-500 dark:text-d-faint">Expenses</span>
+                            <span className="text-[9px] font-bold tracking-[0.1em] uppercase text-slate-500 dark:text-d-faint">Costs</span>
                         </div>
-                        <div className="font-bebas text-[22px] leading-tight tracking-[0.02em] text-slate-400 dark:text-d-muted mt-1">
-                            – {currency} {formatCurrency(profitLoss.expenses)}
+                        <div className="space-y-0.5 font-mono-dm text-[10px]">
+                            <div className="flex justify-between"><span className="text-slate-500 dark:text-d-faint">COGS</span><span className="text-d-red">{formatCurrencyShort(profitLoss.cogs)}</span></div>
+                            <div className="flex justify-between"><span className="text-slate-500 dark:text-d-faint">Returns</span><span className="text-d-red">{formatCurrencyShort(profitLoss.returns)}</span></div>
+                            <div className="flex justify-between"><span className="text-slate-500 dark:text-d-faint">Expenses</span><span className="text-d-red">{formatCurrencyShort(profitLoss.expenses)}</span></div>
                         </div>
                     </div>
+                </div>
 
-                    {/* SALES TREND CHART */}
-                    <div className="col-span-6 bg-slate-100 dark:bg-[#0d0f17] rounded-2xl p-4 border border-slate-200 dark:border-[rgba(255,255,255,0.06)] relative overflow-hidden animate-bento-in flex flex-col gap-2 hover:translate-y-[-2px] hover:shadow-[0_12px_40px_rgba(0,0,0,0.4)] hover:border-[rgba(255,210,100,0.22)] transition-all duration-300" style={{ animationDelay: '0.22s' }}>
-                        <div className="flex items-center justify-between">
-                            <h3 className="font-bebas text-[18px] tracking-[0.07em] text-slate-800 dark:text-d-heading">SALES TREND</h3>
+                {/* ─── ROW 2: Charts (compact) ─── */}
+                <div className="grid grid-cols-12 gap-2.5">
+                    {/* Sales Trend */}
+                    <div className="col-span-7 bg-slate-100 dark:bg-[#0d0f17] rounded-xl p-4 border border-slate-200 dark:border-[rgba(255,255,255,0.06)] h-[200px] flex flex-col">
+                        <div className="flex items-center justify-between mb-2">
+                            <h3 className="font-bebas text-[16px] tracking-[0.07em] text-slate-800 dark:text-d-heading">SALES & ORDERS</h3>
                             {peakData.value > 0 && (
-                                <div className="font-mono-dm text-[9px] font-medium px-2 py-0.5 rounded-full bg-[rgba(255,210,100,0.1)] text-d-accent border border-[rgba(255,210,100,0.22)] tracking-[0.04em]">
+                                <div className="font-mono-dm text-[9px] font-medium px-2 py-0.5 rounded-full bg-[rgba(255,210,100,0.1)] text-d-accent border border-[rgba(255,210,100,0.22)]">
                                     Peak {currency} {formatCurrency(peakData.value)} at {peakData.time}
                                 </div>
                             )}
                         </div>
                         <div className="flex-1 min-h-0">
                             <ResponsiveContainer width="100%" height="100%">
-                                <LineChart data={chartData}>
+                                <AreaChart data={chartData}>
                                     <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.025)" />
-                                    <XAxis dataKey="name" stroke="#2a2f45" fontSize={8} fontFamily="DM Mono" tickLine={false} axisLine={false} />
-                                    <YAxis stroke="#2a2f45" fontSize={8} fontFamily="DM Mono" tickLine={false} axisLine={false} tickFormatter={(v) => formatCurrencyShort(v)} />
+                                    <XAxis dataKey="name" stroke="#2a2f45" fontSize={8} fontFamily="DM Mono" tickLine={false} axisLine={false} interval={timeFilter === 'today' ? 2 : 0} />
+                                    <YAxis yAxisId="left" stroke="#2a2f45" fontSize={8} fontFamily="DM Mono" tickLine={false} axisLine={false} tickFormatter={formatCurrencyShort} />
+                                    <YAxis yAxisId="right" orientation="right" stroke="#2a2f45" fontSize={8} fontFamily="DM Mono" tickLine={false} axisLine={false} allowDecimals={false} />
                                     <Tooltip
                                         contentStyle={{ backgroundColor: '#0d0f17', border: '1px solid rgba(255,210,100,0.2)', borderRadius: '8px', padding: '8px' }}
                                         labelStyle={{ fontFamily: 'DM Mono', fontSize: '9px', color: '#4a5068' }}
-                                        itemStyle={{ fontFamily: 'Bebas Neue', fontSize: '14px', color: '#ffd264' }}
-                                        formatter={(value) => [`${currency} ${formatCurrency(value)}`, 'Sales']}
+                                        formatter={(value, name) => [name === 'sales' ? `${currency} ${formatCurrency(value)}` : `${value} orders`, name === 'sales' ? 'Revenue' : 'Orders']}
                                     />
                                     <defs>
-                                        <linearGradient id="salesGradient" x1="0" y1="0" x2="0" y2="1">
-                                            <stop offset="0%" stopColor="rgba(255,210,100,0.3)" />
-                                            <stop offset="100%" stopColor="rgba(255,210,100,0)" />
+                                        <linearGradient id="salesGrad" x1="0" y1="0" x2="0" y2="1">
+                                            <stop offset="0%" stopColor="#ffd264" stopOpacity={0.3} />
+                                            <stop offset="100%" stopColor="#ffd264" stopOpacity={0} />
                                         </linearGradient>
                                     </defs>
-                                    <Line
-                                        type="monotone"
-                                        dataKey="sales"
-                                        stroke="#ffd264"
-                                        strokeWidth={2}
-                                        dot={{ fill: '#ffd264', strokeWidth: 3, stroke: 'rgba(255,210,100,0.3)', r: 4 }}
-                                        activeDot={{ r: 6, fill: '#ffd264' }}
-                                        fill="url(#salesGradient)"
-                                    />
-                                </LineChart>
+                                    <Area yAxisId="left" type="monotone" dataKey="sales" stroke="#ffd264" strokeWidth={2} fill="url(#salesGrad)" dot={false} activeDot={{ r: 4, fill: '#ffd264' }} />
+                                    <Bar yAxisId="right" dataKey="orders" fill="rgba(91,156,246,0.4)" radius={[3, 3, 0, 0]} maxBarSize={12} />
+                                </AreaChart>
                             </ResponsiveContainer>
                         </div>
                     </div>
 
-                    {/* ORDERS CHART */}
-                    <div className="col-span-6 bg-slate-100 dark:bg-[#0d0f17] rounded-2xl p-4 border border-slate-200 dark:border-[rgba(255,255,255,0.06)] relative overflow-hidden animate-bento-in flex flex-col gap-2 hover:translate-y-[-2px] hover:shadow-[0_12px_40px_rgba(0,0,0,0.4)] hover:border-[rgba(91,156,246,0.22)] transition-all duration-300" style={{ animationDelay: '0.26s' }}>
-                        <div className="flex items-center justify-between">
-                            <h3 className="font-bebas text-[22px] tracking-[0.07em] text-slate-800 dark:text-d-heading">ORDERS / HOUR</h3>
-                            <div className="font-mono-dm text-[10px] font-medium px-3 py-1 rounded-full bg-[rgba(91,156,246,0.1)] text-d-blue border border-[rgba(91,156,246,0.22)] tracking-[0.04em]">
-                                {stats.totalOrders} total {timeFilter}
+                    {/* Peak Times + Quick Stats */}
+                    <div className="col-span-5 bg-slate-100 dark:bg-[#0d0f17] rounded-xl p-4 border border-slate-200 dark:border-[rgba(255,255,255,0.06)] h-[200px] flex flex-col">
+                        <div className="flex items-center gap-1.5 mb-3">
+                            <FiZap size={13} className="text-[#c084fc]" />
+                            <h3 className="font-bebas text-[16px] tracking-[0.07em] text-slate-800 dark:text-d-heading">PEAK TIMES & INSIGHTS</h3>
+                        </div>
+                        <div className="flex-1 space-y-2 overflow-y-auto">
+                            {peakInsights.length > 0 ? peakInsights.map((p, i) => (
+                                <div key={i} className="flex items-center justify-between px-3 py-2 bg-[rgba(192,132,252,0.06)] border border-[rgba(192,132,252,0.12)] rounded-lg">
+                                    <div className="flex items-center gap-2">
+                                        <span className="w-5 h-5 rounded-md bg-[rgba(192,132,252,0.15)] flex items-center justify-center text-[10px] font-bold text-[#c084fc]">{i + 1}</span>
+                                        <span className="font-mono-dm text-[11px] text-slate-700 dark:text-d-text font-medium">{p.name}</span>
+                                    </div>
+                                    <div className="text-right">
+                                        <div className="font-bebas text-[14px] text-[#c084fc]">{currency} {formatCurrency(p.sales)}</div>
+                                        <div className="font-mono-dm text-[9px] text-slate-500 dark:text-d-faint">{p.orders} orders</div>
+                                    </div>
+                                </div>
+                            )) : (
+                                <div className="flex items-center justify-center h-full text-slate-400 dark:text-d-faint text-xs">No sales data yet</div>
+                            )}
+                            {/* Summary stats */}
+                            <div className="grid grid-cols-2 gap-2 pt-1">
+                                <div className="px-3 py-2 bg-[rgba(52,232,161,0.06)] border border-[rgba(52,232,161,0.12)] rounded-lg">
+                                    <div className="text-[9px] font-bold uppercase tracking-wider text-slate-500 dark:text-d-faint">Avg Revenue</div>
+                                    <div className="font-bebas text-[14px] text-d-green">{currency} {formatCurrency(stats.totalOrders > 0 ? stats.totalSales / (chartData.filter(c => c.sales > 0).length || 1) : 0)}</div>
+                                    <div className="text-[9px] text-slate-500 dark:text-d-faint">per active {timeFilter === 'today' ? 'hour' : 'day'}</div>
+                                </div>
+                                <div className="px-3 py-2 bg-[rgba(91,156,246,0.06)] border border-[rgba(91,156,246,0.12)] rounded-lg">
+                                    <div className="text-[9px] font-bold uppercase tracking-wider text-slate-500 dark:text-d-faint">Active {timeFilter === 'today' ? 'Hours' : 'Days'}</div>
+                                    <div className="font-bebas text-[14px] text-d-blue">{chartData.filter(c => c.orders > 0).length}</div>
+                                    <div className="text-[9px] text-slate-500 dark:text-d-faint">of {chartData.length} total</div>
+                                </div>
                             </div>
                         </div>
-                        <div className="flex-1 min-h-0">
-                            <ResponsiveContainer width="100%" height="100%">
-                                <BarChart data={chartData} barCategoryGap="20%" barGap={2}>
-                                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.025)" vertical={false} />
-                                    <XAxis
-                                        dataKey="name"
-                                        stroke="#2a2f45"
-                                        fontSize={9}
-                                        fontFamily="DM Mono"
-                                        tickLine={false}
-                                        axisLine={false}
-                                        interval={timeFilter === 'today' ? 2 : 0}
-                                    />
-                                    <YAxis
-                                        stroke="#2a2f45"
-                                        fontSize={9}
-                                        fontFamily="DM Mono"
-                                        tickLine={false}
-                                        axisLine={false}
-                                        allowDecimals={false}
-                                    />
-                                    <Tooltip
-                                        contentStyle={{ backgroundColor: '#0d0f17', border: '1px solid rgba(91,156,246,0.2)', borderRadius: '10px', padding: '12px' }}
-                                        labelStyle={{ fontFamily: 'DM Mono', fontSize: '10px', color: '#4a5068' }}
-                                        itemStyle={{ fontFamily: 'Bebas Neue', fontSize: '16px', color: '#5b9cf6' }}
-                                        formatter={(value) => [`${value} orders`, '']}
-                                        cursor={{ fill: 'rgba(91,156,246,0.1)' }}
-                                    />
-                                    <defs>
-                                        <linearGradient id="ordersGradient" x1="0" y1="0" x2="0" y2="1">
-                                            <stop offset="0%" stopColor="#5b9cf6" stopOpacity={0.9} />
-                                            <stop offset="50%" stopColor="#5b9cf6" stopOpacity={0.6} />
-                                            <stop offset="100%" stopColor="#5b9cf6" stopOpacity={0.2} />
-                                        </linearGradient>
-                                    </defs>
-                                    <Bar
-                                        dataKey="orders"
-                                        fill="url(#ordersGradient)"
-                                        radius={[8, 8, 0, 0]}
-                                        maxBarSize={40}
-                                    />
-                                </BarChart>
-                            </ResponsiveContainer>
+                    </div>
+                </div>
+
+                {/* ─── ROW 3: Product Intelligence ─── */}
+                <div className="grid grid-cols-3 gap-2.5">
+                    {/* Super Hit Products */}
+                    <div className="bg-slate-100 dark:bg-[#0d0f17] rounded-xl p-4 border border-slate-200 dark:border-[rgba(255,255,255,0.06)]">
+                        <div className="flex items-center gap-2 mb-3">
+                            <div className="w-6 h-6 rounded-lg bg-[rgba(52,232,161,0.1)] border border-[rgba(52,232,161,0.22)] flex items-center justify-center">
+                                <FiAward size={12} className="text-d-green" />
+                            </div>
+                            <h3 className="font-bebas text-[15px] tracking-[0.06em] text-slate-800 dark:text-d-heading">TOP SELLERS</h3>
+                            <span className="ml-auto text-[9px] font-mono-dm text-slate-500 dark:text-d-faint">All time</span>
+                        </div>
+                        {insightsLoading ? (
+                            <div className="flex items-center justify-center h-[120px] text-slate-400 dark:text-d-faint text-xs">Loading...</div>
+                        ) : topSellingProducts.length === 0 ? (
+                            <div className="flex items-center justify-center h-[120px] text-slate-400 dark:text-d-faint text-xs">No sales yet</div>
+                        ) : (
+                            <div className="space-y-1.5">
+                                {topSellingProducts.slice(0, 5).map((p, i) => {
+                                    const maxQty = topSellingProducts[0]?.totalQtySold || 1;
+                                    return (
+                                        <div key={i} className="flex items-center gap-2">
+                                            <span className="w-5 h-5 rounded-md bg-[rgba(52,232,161,0.1)] flex items-center justify-center text-[10px] font-bold text-d-green flex-shrink-0">{i + 1}</span>
+                                            <div className="flex-1 min-w-0">
+                                                <div className="text-[11px] text-slate-700 dark:text-d-text font-medium truncate">{p.name}</div>
+                                                <div className="w-full bg-[rgba(52,232,161,0.08)] rounded-full h-1 mt-0.5">
+                                                    <div className="h-1 rounded-full bg-d-green" style={{ width: `${(p.totalQtySold / maxQty) * 100}%` }} />
+                                                </div>
+                                            </div>
+                                            <div className="text-right flex-shrink-0">
+                                                <div className="text-[11px] font-semibold text-d-green">{p.totalQtySold} sold</div>
+                                                <div className="text-[9px] text-slate-500 dark:text-d-faint">{currency} {formatCurrencyShort(p.totalRevenue)}</div>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        )}
+                    </div>
+
+                    {/* Best Margins */}
+                    <div className="bg-slate-100 dark:bg-[#0d0f17] rounded-xl p-4 border border-slate-200 dark:border-[rgba(255,255,255,0.06)]">
+                        <div className="flex items-center gap-2 mb-3">
+                            <div className="w-6 h-6 rounded-lg bg-[rgba(255,210,100,0.1)] border border-[rgba(255,210,100,0.22)] flex items-center justify-center">
+                                <FiActivity size={12} className="text-d-accent" />
+                            </div>
+                            <h3 className="font-bebas text-[15px] tracking-[0.06em] text-slate-800 dark:text-d-heading">BEST MARGINS</h3>
+                            <span className="ml-auto text-[9px] font-mono-dm text-slate-500 dark:text-d-faint capitalize">{timeFilter}</span>
+                        </div>
+                        {bestMarginProducts.length === 0 ? (
+                            <div className="flex items-center justify-center h-[120px] text-slate-400 dark:text-d-faint text-xs">Not enough data yet</div>
+                        ) : (
+                            <div className="space-y-1.5">
+                                {bestMarginProducts.map((p, i) => (
+                                    <div key={i} className="flex items-center gap-2">
+                                        <span className="w-5 h-5 rounded-md bg-[rgba(255,210,100,0.1)] flex items-center justify-center text-[10px] font-bold text-d-accent flex-shrink-0">{i + 1}</span>
+                                        <div className="flex-1 min-w-0">
+                                            <div className="text-[11px] text-slate-700 dark:text-d-text font-medium truncate">{p.name}</div>
+                                            <div className="text-[9px] text-slate-500 dark:text-d-faint">{p.totalQtySold} sold</div>
+                                        </div>
+                                        <div className="text-right flex-shrink-0">
+                                            <div className="text-[11px] font-bold text-d-accent">{p.margin.toFixed(0)}%</div>
+                                            <div className="text-[9px] text-d-green">{currency} {formatCurrencyShort(p.totalProfit)}</div>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+
+                    {/* Dead Products */}
+                    <div className="bg-slate-100 dark:bg-[#0d0f17] rounded-xl p-4 border border-slate-200 dark:border-[rgba(255,255,255,0.06)]">
+                        <div className="flex items-center gap-2 mb-3">
+                            <div className="w-6 h-6 rounded-lg bg-[rgba(255,107,107,0.1)] border border-[rgba(255,107,107,0.22)] flex items-center justify-center">
+                                <FiAlertCircle size={12} className="text-d-red" />
+                            </div>
+                            <h3 className="font-bebas text-[15px] tracking-[0.06em] text-slate-800 dark:text-d-heading">DEAD STOCK</h3>
+                            <span className="ml-auto text-[9px] font-mono-dm text-slate-500 dark:text-d-faint">30 days</span>
+                        </div>
+                        {insightsLoading ? (
+                            <div className="flex items-center justify-center h-[120px] text-slate-400 dark:text-d-faint text-xs">Loading...</div>
+                        ) : deadStockData.products.length === 0 ? (
+                            <div className="flex flex-col items-center justify-center h-[120px] text-d-green">
+                                <FiCheck size={20} />
+                                <p className="text-xs mt-1">No dead stock found</p>
+                            </div>
+                        ) : (
+                            <>
+                                <div className="flex items-center gap-2 mb-2 px-2 py-1.5 bg-[rgba(255,107,107,0.06)] border border-[rgba(255,107,107,0.12)] rounded-lg">
+                                    <FiAlertTriangle size={11} className="text-d-red flex-shrink-0" />
+                                    <span className="text-[10px] text-d-red font-medium">
+                                        {deadStockData.products.length} products &middot; {currency} {formatCurrencyShort(deadStockData.summary.totalDeadValue || 0)} stuck
+                                    </span>
+                                </div>
+                                <div className="space-y-1.5">
+                                    {deadStockData.products.slice(0, 5).map((p, i) => (
+                                        <div key={i} className="flex items-center gap-2">
+                                            <span className="w-5 h-5 rounded-md bg-[rgba(255,107,107,0.1)] flex items-center justify-center text-[10px] font-bold text-d-red flex-shrink-0">{i + 1}</span>
+                                            <div className="flex-1 min-w-0">
+                                                <div className="text-[11px] text-slate-700 dark:text-d-text font-medium truncate">{p.name}</div>
+                                                <div className="text-[9px] text-slate-500 dark:text-d-faint">{p.category || 'General'}</div>
+                                            </div>
+                                            <div className="text-right flex-shrink-0">
+                                                <div className="text-[11px] font-semibold text-d-red">{p.stockQuantity} in stock</div>
+                                                <div className="text-[9px] text-slate-500 dark:text-d-faint">{currency} {formatCurrencyShort(p.stockValue || 0)}</div>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </>
+                        )}
+                    </div>
+                </div>
+
+                {/* ─── ROW 4: Low Stock Alerts ─── */}
+                {lowStockData.length > 0 && (
+                    <div className="bg-slate-100 dark:bg-[#0d0f17] rounded-xl p-4 border border-slate-200 dark:border-[rgba(255,255,255,0.06)]">
+                        <div className="flex items-center gap-2 mb-3">
+                            <div className="w-6 h-6 rounded-lg bg-[rgba(255,185,50,0.1)] border border-[rgba(255,185,50,0.22)] flex items-center justify-center">
+                                <FiPackage size={12} className="text-d-accent" />
+                            </div>
+                            <h3 className="font-bebas text-[15px] tracking-[0.06em] text-slate-800 dark:text-d-heading">LOW STOCK ALERTS</h3>
+                            <span className="ml-1 px-2 py-0.5 bg-[rgba(255,185,50,0.1)] text-d-accent text-[10px] font-bold rounded-full border border-[rgba(255,185,50,0.22)]">
+                                {lowStockData.length}
+                            </span>
+                        </div>
+                        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-2">
+                            {lowStockData.slice(0, 12).map((p, i) => {
+                                const pct = p.lowStockAlert > 0 ? Math.min((p.stockQuantity / p.lowStockAlert) * 100, 100) : 0;
+                                const isVeryLow = pct < 25;
+                                return (
+                                    <div key={i} className={`px-3 py-2 rounded-lg border ${isVeryLow ? 'bg-[rgba(255,107,107,0.05)] border-[rgba(255,107,107,0.15)]' : 'bg-[rgba(255,185,50,0.05)] border-[rgba(255,185,50,0.15)]'}`}>
+                                        <div className="text-[11px] text-slate-700 dark:text-d-text font-medium truncate">{p.name}</div>
+                                        <div className="flex items-center gap-2 mt-1">
+                                            <div className="flex-1 bg-[rgba(255,255,255,0.06)] rounded-full h-1.5">
+                                                <div className={`h-1.5 rounded-full ${isVeryLow ? 'bg-d-red' : 'bg-d-accent'}`} style={{ width: `${pct}%` }} />
+                                            </div>
+                                            <span className={`text-[10px] font-bold ${isVeryLow ? 'text-d-red' : 'text-d-accent'}`}>{p.stockQuantity}</span>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </div>
+                )}
+
+                {/* ─── ROW 5: Employee Performance & Payment Methods ─── */}
+                <div className="grid grid-cols-12 gap-2.5">
+                    {/* Employee Performance */}
+                    <div className="col-span-7 bg-slate-100 dark:bg-[#0d0f17] rounded-xl p-4 border border-slate-200 dark:border-[rgba(255,255,255,0.06)]">
+                        <div className="flex items-center gap-2 mb-3">
+                            <div className="w-6 h-6 rounded-lg bg-[rgba(91,156,246,0.1)] border border-[rgba(91,156,246,0.22)] flex items-center justify-center">
+                                <FiUsers size={12} className="text-d-blue" />
+                            </div>
+                            <h3 className="font-bebas text-[15px] tracking-[0.06em] text-slate-800 dark:text-d-heading">EMPLOYEE PERFORMANCE</h3>
+                            <span className="ml-auto text-[9px] font-mono-dm text-slate-500 dark:text-d-faint capitalize">{timeFilter}</span>
+                        </div>
+                        {cashierData.length === 0 ? (
+                            <div className="flex items-center justify-center h-[120px] text-slate-400 dark:text-d-faint text-xs">No sales data for this period</div>
+                        ) : (
+                            <div className="space-y-0.5">
+                                {/* Header */}
+                                <div className="grid grid-cols-12 gap-2 px-3 py-1.5 text-[9px] font-bold uppercase tracking-wider text-slate-500 dark:text-d-faint">
+                                    <div className="col-span-3">Employee</div>
+                                    <div className="col-span-2 text-right">Sales</div>
+                                    <div className="col-span-2 text-right">Orders</div>
+                                    <div className="col-span-2 text-right">Profit</div>
+                                    <div className="col-span-3 text-right">Avg Order</div>
+                                </div>
+                                {cashierData.sort((a, b) => b.totalSales - a.totalSales).map((emp, i) => {
+                                    const maxSales = cashierData[0]?.totalSales || 1;
+                                    return (
+                                        <div key={i} className="grid grid-cols-12 gap-2 items-center px-3 py-2 rounded-lg hover:bg-[rgba(91,156,246,0.04)] transition-colors">
+                                            <div className="col-span-3 flex items-center gap-2">
+                                                <span className="w-5 h-5 rounded-md bg-[rgba(91,156,246,0.1)] flex items-center justify-center text-[10px] font-bold text-d-blue flex-shrink-0">{i + 1}</span>
+                                                <span className="text-[11px] text-slate-700 dark:text-d-text font-medium truncate">{emp.cashierName}</span>
+                                            </div>
+                                            <div className="col-span-2 text-right">
+                                                <div className="text-[11px] font-semibold text-d-green">{currency} {formatCurrencyShort(emp.totalSales)}</div>
+                                                <div className="w-full bg-[rgba(52,232,161,0.08)] rounded-full h-1 mt-0.5">
+                                                    <div className="h-1 rounded-full bg-d-green" style={{ width: `${(emp.totalSales / maxSales) * 100}%` }} />
+                                                </div>
+                                            </div>
+                                            <div className="col-span-2 text-right">
+                                                <span className="text-[11px] text-d-blue font-semibold">{emp.billCount}</span>
+                                            </div>
+                                            <div className="col-span-2 text-right">
+                                                <span className={`text-[11px] font-semibold ${emp.totalProfit >= 0 ? 'text-d-green' : 'text-d-red'}`}>
+                                                    {currency} {formatCurrencyShort(emp.totalProfit)}
+                                                </span>
+                                            </div>
+                                            <div className="col-span-3 text-right">
+                                                <span className="text-[11px] text-d-accent font-semibold">{currency} {formatCurrencyShort(emp.avgOrderValue)}</span>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                                {/* Employee count summary */}
+                                <div className="flex items-center gap-3 mt-2 pt-2 border-t border-slate-200 dark:border-[rgba(255,255,255,0.06)] px-3">
+                                    <span className="text-[9px] uppercase tracking-wider text-slate-500 dark:text-d-faint font-bold">Total Employees</span>
+                                    <span className="font-bebas text-[14px] text-d-blue">{employeeList.length}</span>
+                                    <span className="text-[9px] text-slate-500 dark:text-d-faint mx-2">|</span>
+                                    <span className="text-[9px] uppercase tracking-wider text-slate-500 dark:text-d-faint font-bold">Active Sellers</span>
+                                    <span className="font-bebas text-[14px] text-d-green">{cashierData.length}</span>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+
+                    {/* Payment Methods */}
+                    <div className="col-span-5 bg-slate-100 dark:bg-[#0d0f17] rounded-xl p-4 border border-slate-200 dark:border-[rgba(255,255,255,0.06)]">
+                        <div className="flex items-center gap-2 mb-3">
+                            <div className="w-6 h-6 rounded-lg bg-[rgba(192,132,252,0.1)] border border-[rgba(192,132,252,0.22)] flex items-center justify-center">
+                                <FiCreditCard size={12} className="text-[#c084fc]" />
+                            </div>
+                            <h3 className="font-bebas text-[15px] tracking-[0.06em] text-slate-800 dark:text-d-heading">PAYMENT METHODS</h3>
+                            <span className="ml-auto text-[9px] font-mono-dm text-slate-500 dark:text-d-faint capitalize">{timeFilter}</span>
+                        </div>
+                        {(() => {
+                            const methods = Array.isArray(paymentMethods) ? paymentMethods : [];
+                            const totalAmount = methods.reduce((sum, m) => sum + (m.totalAmount || m.total || 0), 0);
+                            if (methods.length === 0) {
+                                return <div className="flex items-center justify-center h-[120px] text-slate-400 dark:text-d-faint text-xs">No payment data</div>;
+                            }
+                            const colors = { cash: '#34e8a1', online: '#5b9cf6', card: '#c084fc', upi: '#ffd264', credit: '#ff6b6b', bank: '#38bdf8' };
+                            return (
+                                <div className="space-y-2">
+                                    {methods.map((m, i) => {
+                                        const name = (m._id || m.method || 'Other').toLowerCase();
+                                        const displayName = (m._id || m.method || 'Other');
+                                        const amount = m.totalAmount || m.total || 0;
+                                        const count = m.count || m.billCount || 0;
+                                        const pct = totalAmount > 0 ? (amount / totalAmount) * 100 : 0;
+                                        const color = colors[name] || '#5b9cf6';
+                                        return (
+                                            <div key={i} className="px-3 py-2.5 rounded-lg border border-[rgba(255,255,255,0.04)] bg-[rgba(255,255,255,0.02)]">
+                                                <div className="flex items-center justify-between mb-1.5">
+                                                    <div className="flex items-center gap-2">
+                                                        <div className="w-2 h-2 rounded-full" style={{ backgroundColor: color }} />
+                                                        <span className="text-[11px] text-slate-700 dark:text-d-text font-medium capitalize">{displayName}</span>
+                                                        <span className="text-[9px] text-slate-500 dark:text-d-faint">({count} bills)</span>
+                                                    </div>
+                                                    <span className="font-bebas text-[14px]" style={{ color }}>{currency} {formatCurrencyShort(amount)}</span>
+                                                </div>
+                                                <div className="w-full bg-[rgba(255,255,255,0.06)] rounded-full h-1.5">
+                                                    <div className="h-1.5 rounded-full transition-all duration-500" style={{ width: `${pct}%`, backgroundColor: color }} />
+                                                </div>
+                                                <div className="text-right mt-0.5">
+                                                    <span className="text-[9px] text-slate-500 dark:text-d-faint">{pct.toFixed(0)}%</span>
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
+                                    <div className="flex items-center justify-between px-3 pt-2 border-t border-slate-200 dark:border-[rgba(255,255,255,0.06)]">
+                                        <span className="text-[9px] uppercase tracking-wider text-slate-500 dark:text-d-faint font-bold">Total Collection</span>
+                                        <span className="font-bebas text-[16px] text-d-accent">{currency} {formatCurrency(totalAmount)}</span>
+                                    </div>
+                                </div>
+                            );
+                        })()}
+                    </div>
+                </div>
+
+                {/* ─── ROW 6: Quick Actions ─── */}
+                <div className="bg-slate-100 dark:bg-[#0d0f17] rounded-xl p-4 border border-slate-200 dark:border-[rgba(255,255,255,0.06)]">
+                    <div className="flex items-center gap-2 mb-3">
+                        <div className="w-6 h-6 rounded-lg bg-[rgba(255,210,100,0.1)] border border-[rgba(255,210,100,0.22)] flex items-center justify-center">
+                            <FiZap size={12} className="text-d-accent" />
+                        </div>
+                        <h3 className="font-bebas text-[15px] tracking-[0.06em] text-slate-800 dark:text-d-heading">QUICK ACTIONS</h3>
+                    </div>
+                    <div className="grid grid-cols-4 lg:grid-cols-8 gap-2">
+                        {[
+                            { label: 'New Sale', icon: FiShoppingCart, path: '/sales', color: '#34e8a1', bg: 'rgba(52,232,161,0.08)', border: 'rgba(52,232,161,0.18)' },
+                            { label: 'Products', icon: FiPackage, path: '/products', color: '#ffd264', bg: 'rgba(255,210,100,0.08)', border: 'rgba(255,210,100,0.18)' },
+                            { label: 'Vendors', icon: FiTruck, path: '/vendors', color: '#5b9cf6', bg: 'rgba(91,156,246,0.08)', border: 'rgba(91,156,246,0.18)' },
+                            { label: 'Customers', icon: FiUser, path: '/customers', color: '#c084fc', bg: 'rgba(192,132,252,0.08)', border: 'rgba(192,132,252,0.18)' },
+                            { label: 'Expenses', icon: FiFileText, path: '/expenses', color: '#ff6b6b', bg: 'rgba(255,107,107,0.08)', border: 'rgba(255,107,107,0.18)' },
+                            { label: 'Cashbook', icon: FiBookOpen, path: '/cashbook', color: '#38bdf8', bg: 'rgba(56,189,248,0.08)', border: 'rgba(56,189,248,0.18)' },
+                            { label: 'Reports', icon: FiPieChart, path: '/reports', color: '#f472b6', bg: 'rgba(244,114,182,0.08)', border: 'rgba(244,114,182,0.18)' },
+                            { label: 'Employees', icon: FiUsers, path: '/employees', color: '#fb923c', bg: 'rgba(251,146,60,0.08)', border: 'rgba(251,146,60,0.18)' },
+                        ].map((action, i) => (
+                            <button
+                                key={i}
+                                onClick={() => navigate(action.path)}
+                                className="flex flex-col items-center gap-2 px-3 py-3 rounded-xl border transition-all duration-200 hover:scale-[1.03] active:scale-[0.97]"
+                                style={{ backgroundColor: action.bg, borderColor: action.border }}
+                            >
+                                <action.icon size={18} style={{ color: action.color }} />
+                                <span className="text-[10px] font-semibold tracking-wide text-slate-700 dark:text-d-text">{action.label}</span>
+                            </button>
+                        ))}
+                    </div>
+                </div>
+
+                {/* ─── ROW 7: Inventory & Vendor Summary ─── */}
+                <div className="grid grid-cols-2 gap-2.5">
+                    {/* Inventory Snapshot */}
+                    <div className="bg-slate-100 dark:bg-[#0d0f17] rounded-xl p-4 border border-slate-200 dark:border-[rgba(255,255,255,0.06)]">
+                        <div className="flex items-center gap-2 mb-3">
+                            <div className="w-6 h-6 rounded-lg bg-[rgba(56,189,248,0.1)] border border-[rgba(56,189,248,0.22)] flex items-center justify-center">
+                                <FiGrid size={12} className="text-[#38bdf8]" />
+                            </div>
+                            <h3 className="font-bebas text-[15px] tracking-[0.06em] text-slate-800 dark:text-d-heading">INVENTORY SNAPSHOT</h3>
+                        </div>
+                        <div className="grid grid-cols-3 gap-3">
+                            <div className="text-center px-3 py-3 bg-[rgba(52,232,161,0.06)] border border-[rgba(52,232,161,0.12)] rounded-lg">
+                                <div className="font-bebas text-[22px] text-d-green">{topSellingProducts.length > 0 ? topSellingProducts.reduce((s, p) => s + (p.totalQtySold || 0), 0) : 0}</div>
+                                <div className="text-[9px] uppercase tracking-wider text-slate-500 dark:text-d-faint font-bold mt-1">Units Sold</div>
+                                <div className="text-[9px] text-slate-500 dark:text-d-faint">all time</div>
+                            </div>
+                            <div className="text-center px-3 py-3 bg-[rgba(255,107,107,0.06)] border border-[rgba(255,107,107,0.12)] rounded-lg">
+                                <div className="font-bebas text-[22px] text-d-red">{deadStockData.products.length}</div>
+                                <div className="text-[9px] uppercase tracking-wider text-slate-500 dark:text-d-faint font-bold mt-1">Dead Items</div>
+                                <div className="text-[9px] text-slate-500 dark:text-d-faint">{currency} {formatCurrencyShort(deadStockData.summary.totalDeadValue || 0)} value</div>
+                            </div>
+                            <div className="text-center px-3 py-3 bg-[rgba(255,185,50,0.06)] border border-[rgba(255,185,50,0.12)] rounded-lg">
+                                <div className="font-bebas text-[22px] text-d-accent">{lowStockData.length}</div>
+                                <div className="text-[9px] uppercase tracking-wider text-slate-500 dark:text-d-faint font-bold mt-1">Low Stock</div>
+                                <div className="text-[9px] text-slate-500 dark:text-d-faint">need reorder</div>
+                            </div>
                         </div>
                     </div>
 
+                    {/* Vendor / Supply Summary */}
+                    <div className="bg-slate-100 dark:bg-[#0d0f17] rounded-xl p-4 border border-slate-200 dark:border-[rgba(255,255,255,0.06)]">
+                        <div className="flex items-center gap-2 mb-3">
+                            <div className="w-6 h-6 rounded-lg bg-[rgba(251,146,60,0.1)] border border-[rgba(251,146,60,0.22)] flex items-center justify-center">
+                                <FiTruck size={12} className="text-[#fb923c]" />
+                            </div>
+                            <h3 className="font-bebas text-[15px] tracking-[0.06em] text-slate-800 dark:text-d-heading">SUPPLY OVERVIEW</h3>
+                        </div>
+                        {(() => {
+                            const ov = supplyStats?.overall || {};
+                            return (
+                                <div className="grid grid-cols-3 gap-3">
+                                    <div className="text-center px-3 py-3 bg-[rgba(91,156,246,0.06)] border border-[rgba(91,156,246,0.12)] rounded-lg">
+                                        <div className="font-bebas text-[22px] text-d-blue">{ov.count || 0}</div>
+                                        <div className="text-[9px] uppercase tracking-wider text-slate-500 dark:text-d-faint font-bold mt-1">Total Supplies</div>
+                                    </div>
+                                    <div className="text-center px-3 py-3 bg-[rgba(52,232,161,0.06)] border border-[rgba(52,232,161,0.12)] rounded-lg">
+                                        <div className="font-bebas text-[22px] text-d-green">{currency} {formatCurrencyShort(ov.totalPaid || 0)}</div>
+                                        <div className="text-[9px] uppercase tracking-wider text-slate-500 dark:text-d-faint font-bold mt-1">Total Paid</div>
+                                    </div>
+                                    <div className="text-center px-3 py-3 bg-[rgba(255,107,107,0.06)] border border-[rgba(255,107,107,0.12)] rounded-lg">
+                                        <div className="font-bebas text-[22px] text-d-red">{currency} {formatCurrencyShort(ov.totalRemaining || 0)}</div>
+                                        <div className="text-[9px] uppercase tracking-wider text-slate-500 dark:text-d-faint font-bold mt-1">Outstanding</div>
+                                    </div>
+                                </div>
+                            );
+                        })()}
+                    </div>
                 </div>
+
             </div>
 
             {/* Detail Popup */}

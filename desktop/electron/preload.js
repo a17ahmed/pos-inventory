@@ -7,7 +7,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getPlatform: () => ipcRenderer.invoke('get-platform'),
 
     // Printing
-    printReceipt: (options) => ipcRenderer.invoke('print-receipt', options),
+    printReceipt: (data) => ipcRenderer.invoke('print-receipt', data),
 
     // Menu actions
     onMenuAction: (callback) => {

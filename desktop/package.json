@@ -16,12 +16,14 @@
   },
   "dependencies": {
     "axios": "^1.6.0",
+    "date-fns": "^2.30.0",
+    "escpos": "^3.0.0-alpha.6",
+    "escpos-usb": "^3.0.0-alpha.4",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "react-router-dom": "^6.20.0",
     "react-icons": "^4.12.0",
+    "react-router-dom": "^6.20.0",
     "recharts": "^2.10.0",
-    "date-fns": "^2.30.0",
     "socket.io-client": "^4.8.3"
   },
   "devDependencies": {
@@ -46,11 +48,15 @@
       "electron/**/*"
     ],
     "win": {
-      "target": ["nsis"],
+      "target": [
+        "nsis"
+      ],
       "icon": "public/icon.ico"
     },
     "mac": {
-      "target": ["dmg"],
+      "target": [
+        "dmg"
+      ],
       "icon": "public/icon.icns",
       "category": "public.app-category.business"
     },
