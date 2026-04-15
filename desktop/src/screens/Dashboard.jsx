@@ -10,7 +10,6 @@ import { getSupplyStats } from '../services/api/supplies';
 import { searchCustomers } from '../services/api/customers';
 import { getExpenses as getApprovedExpenses } from '../services/api/expenses';
 import { getCashBalance } from '../services/api/cashbook';
-import { getPendingBills, createPendingBill, resumePendingBill, cancelPendingBill as cancelPendingBillApi } from '../services/api/pendingBills';
 import {
     FiTrendingUp,
     FiShoppingCart,
@@ -123,19 +122,6 @@ const EmployeeDashboard = () => {
     const [successData, setSuccessData] = useState(null);
     const cashInputRef = useRef(null);
 
-    // Hold Bill Modal State
-    const [showHoldModal, setShowHoldModal] = useState(false);
-    const [holdCustomerName, setHoldCustomerName] = useState('');
-    const [holdCustomerPhone, setHoldCustomerPhone] = useState('');
-    const [holdAmountPaid, setHoldAmountPaid] = useState('');
-    const [holdingBill, setHoldingBill] = useState(false);
-
-    // Pending Bills Modal State
-    const [showPendingModal, setShowPendingModal] = useState(false);
-    const [pendingBills, setPendingBills] = useState([]);
-    const [loadingPending, setLoadingPending] = useState(false);
-    const [pendingBillId, setPendingBillId] = useState(null);
-    const [resumedBillInfo, setResumedBillInfo] = useState(null);
 
     // Toast
     const [toast, setToast] = useState({ show: false, message: '', icon: '' });
@@ -143,7 +129,6 @@ const EmployeeDashboard = () => {
     useEffect(() => {
         loadData();
         loadSavedBills();
-        checkForPendingBillToLoad();
     }, []);
 
     // Debounced customer search
@@ -188,79 +173,18 @@ const EmployeeDashboard = () => {
         setTimeout(() => setToast({ show: false, message: '', icon: '' }), 2400);
     };
 
-    const checkForPendingBillToLoad = () => {
-        try {
-            const pendingBillData = localStorage.getItem('pendingBillToLoad');
-            if (pendingBillData) {
-                const bill = JSON.parse(pendingBillData);
-                localStorage.removeItem('pendingBillToLoad');
-
-                const savedBills = localStorage.getItem('retailBills');
-                const existingBills = savedBills ? JSON.parse(savedBills) : [];
-                const maxNum = existingBills.length > 0
-                    ? Math.max(...existingBills.map(b => parseInt(b.name.replace('Bill ', '')) || 0))
-                    : 0;
-
-                const newBill = {
-                    id: Date.now().toString(),
-                    name: bill.billName || `Bill ${maxNum + 1}`,
-                    items: bill.items.map((item) => ({
-                        _id: item._id,
-                        name: item.name,
-                        price: item.price,
-                        qty: item.qty,
-                        gst: item.gst || 0,
-                        emoji: item.emoji || '📦',
-                    })),
-                    createdAt: new Date().toISOString()
-                };
-
-                const updatedBills = [...existingBills, newBill];
-                setBillCounter(maxNum + 1);
-                setBills(updatedBills);
-                setActiveBillId(newBill.id);
-                setBillingActive(true);
-                setResumedBillInfo({
-                    amountPaid: bill.amountPaid || 0,
-                    remainingAmount: bill.remainingAmount || bill.total,
-                    originalTotal: bill.total,
-                    customerName: bill.customerName,
-                    customerPhone: bill.customerPhone,
-                });
-                saveBills(updatedBills, newBill.id);
-            }
-        } catch (error) {
-            console.error('Error loading pending bill:', error);
-            localStorage.removeItem('pendingBillToLoad');
-        }
-    };
 
     // Keyboard shortcuts
     useEffect(() => {
         const handleKeyDown = (e) => {
             const currentBill = bills.find(b => b.id === activeBillId);
             const hasItems = currentBill?.items?.length > 0;
-            const anyModalOpen = showPaymentModal || showHoldModal || showPendingModal;
+            const anyModalOpen = showPaymentModal;
 
             // Ctrl+K or Cmd+K - Focus search
             if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
                 e.preventDefault();
                 inputRef.current?.focus();
-                return;
-            }
-
-            // Ctrl+2 - Hold Bill
-            if ((e.ctrlKey || e.metaKey) && e.key === '2' && hasItems && !anyModalOpen) {
-                e.preventDefault();
-                setShowHoldModal(true);
-                return;
-            }
-
-            // Ctrl+3 - Pending Bills
-            if ((e.ctrlKey || e.metaKey) && e.key === '3' && !anyModalOpen) {
-                e.preventDefault();
-                fetchPendingBills();
-                setShowPendingModal(true);
                 return;
             }
 
@@ -277,14 +201,12 @@ const EmployeeDashboard = () => {
             if (e.key === 'Escape') {
                 if (showSuccess) { setShowSuccess(false); setSuccessData(null); return; }
                 if (showPaymentModal) { setShowPaymentModal(false); return; }
-                if (showHoldModal) { setShowHoldModal(false); return; }
-                if (showPendingModal) { setShowPendingModal(false); return; }
             }
         };
 
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [bills, activeBillId, showPaymentModal, showHoldModal, showPendingModal, showSuccess]);
+    }, [bills, activeBillId, showPaymentModal, showSuccess]);
 
     useEffect(() => {
         if (showPaymentModal && paymentMethod === 'cash') {
@@ -657,18 +579,6 @@ const EmployeeDashboard = () => {
         }));
     };
 
-    const fetchPendingBills = async () => {
-        setLoadingPending(true);
-        try {
-            const res = await getPendingBills();
-            setPendingBills((res.data || []).filter(b => b.status === 'pending'));
-        } catch (error) {
-            console.error('Error fetching pending bills:', error);
-        } finally {
-            setLoadingPending(false);
-        }
-    };
-
     const handleCheckout = async (confirmedWalkIn = false) => {
         const bill = bills.find(b => b.id === activeBillId);
         if (!bill || bill.items.length === 0) return;
@@ -687,7 +597,7 @@ const EmployeeDashboard = () => {
         }
 
         const totals = getBillTotal(bill);
-        const currentEffectiveTotal = resumedBillInfo ? resumedBillInfo.remainingAmount : totals.total;
+        const currentEffectiveTotal = totals.total;
         const currentChangeAmount = Math.max(0, parseFloat(cashGiven || 0) - currentEffectiveTotal);
 
         if (paymentMethod === 'cash' && parseFloat(cashGiven || 0) < currentEffectiveTotal) {
@@ -728,8 +638,8 @@ const EmployeeDashboard = () => {
                 })),
                 status: 'completed',
                 customer: bill.customer || null,
-                customerName: bill.customerName || resumedBillInfo?.customerName || 'Walk-in',
-                customerPhone: bill.customerPhone || resumedBillInfo?.customerPhone || '',
+                customerName: bill.customerName || 'Walk-in',
+                customerPhone: bill.customerPhone || '',
                 billDiscountAmount: Number(bill.billDiscountAmount) || 0,
                 billDiscountReason: bill.billDiscountReason || '',
                 paymentMethod: backendPaymentMethod,
@@ -738,15 +648,6 @@ const EmployeeDashboard = () => {
                 idempotencyKey,
             });
 
-            if (pendingBillId) {
-                try {
-                    await resumePendingBill(pendingBillId);
-                } catch (err) {
-                    console.warn('Failed to mark pending bill:', err);
-                }
-                setPendingBillId(null);
-                setResumedBillInfo(null);
-            }
 
             // Reset bill
             if (bills.length > 1) {
@@ -948,120 +849,10 @@ const EmployeeDashboard = () => {
         }, 300);
     };
 
-    const handleHoldBill = async () => {
-        const bill = bills.find(b => b.id === activeBillId);
-        if (!bill || bill.items.length === 0) return;
-
-        const { subtotal, tax, total } = getBillTotal(bill);
-
-        setHoldingBill(true);
-        try {
-            await createPendingBill({
-                billName: bill.name,
-                items: bill.items.map((item) => ({
-                    _id: item._id,
-                    name: item.name,
-                    price: item.price,
-                    qty: item.qty,
-                    gst: item.gst || 0,
-                })),
-                customerName: holdCustomerName.trim() || 'Walk-in Customer',
-                customerPhone: holdCustomerPhone.trim(),
-                subtotal,
-                tax,
-                total,
-                amountPaid: parseFloat(holdAmountPaid) || 0,
-                employeeName: user?.name || 'Staff',
-                employeeId: user?._id,
-            });
-
-            // Reset bill
-            if (bills.length > 1) {
-                const updated = bills.filter(b => b.id !== bill.id);
-                setBills(updated);
-                setActiveBillId(updated[0]?.id);
-                saveBills(updated, updated[0]?.id);
-            } else {
-                const newBill = {
-                    id: Date.now().toString(),
-                    name: 'Bill 1',
-                    items: [],
-                    createdAt: new Date().toISOString(),
-                    customer: null,
-                    customerName: '',
-                    customerPhone: '',
-                    billDiscountAmount: 0,
-                    billDiscountReason: '',
-                };
-                setBills([newBill]);
-                setActiveBillId(newBill.id);
-                saveBills([newBill], newBill.id);
-            }
-
-            setShowHoldModal(false);
-            setHoldCustomerName('');
-            setHoldCustomerPhone('');
-            setHoldAmountPaid('');
-            showToast('🔖 Bill held');
-        } catch (error) {
-            showToast('Failed to save pending bill');
-        } finally {
-            setHoldingBill(false);
-        }
-    };
-
-    const loadPendingBill = async (bill) => {
-        try {
-            await resumePendingBill(bill._id);
-        } catch (err) {
-            console.warn('Failed to mark pending bill:', err);
-        }
-
-        const newBill = {
-            id: Date.now().toString(),
-            name: bill.billName || `Bill ${billCounter + 1}`,
-            items: bill.items.map((item) => ({
-                _id: item._id,
-                name: item.name,
-                price: item.price,
-                qty: item.qty,
-                gst: item.gst || 0,
-                emoji: item.emoji || '📦',
-            })),
-            createdAt: new Date().toISOString()
-        };
-
-        setBillCounter(prev => prev + 1);
-        setBills(prev => [...prev, newBill]);
-        setActiveBillId(newBill.id);
-        setPendingBillId(null);
-        setResumedBillInfo({
-            amountPaid: bill.amountPaid || 0,
-            remainingAmount: bill.remainingAmount || bill.total,
-            originalTotal: bill.total,
-            customerName: bill.customerName,
-            customerPhone: bill.customerPhone,
-        });
-        saveBills([...bills, newBill], newBill.id);
-        setShowPendingModal(false);
-        showToast('📋 Bill loaded');
-    };
-
-    const handleCancelPendingBill = async (billId) => {
-        if (!window.confirm('Cancel this pending bill?')) return;
-        try {
-            await cancelPendingBillApi(billId);
-            setPendingBills((prev) => prev.filter((b) => b._id !== billId));
-            showToast('Bill cancelled');
-        } catch (error) {
-            showToast('Failed to cancel bill');
-        }
-    };
-
     const activeBill = bills.find(b => b.id === activeBillId);
     const activeTotal = activeBill ? getBillTotal(activeBill) : { subtotal: 0, tax: 0, total: 0 };
     const activeItemCount = activeBill ? activeBill.items.reduce((sum, item) => sum + item.qty, 0) : 0;
-    const effectiveTotal = resumedBillInfo ? resumedBillInfo.remainingAmount : activeTotal.total;
+    const effectiveTotal = activeTotal.total;
     const changeAmount = Math.max(0, parseFloat(cashGiven || 0) - effectiveTotal);
 
     const formatCurrency = (amount) => `Rs. ${(amount || 0).toLocaleString()}`;
@@ -1601,12 +1392,6 @@ const EmployeeDashboard = () => {
 
             {/* Cart Footer */}
             <div className="px-6 py-4 border-t border-slate-200 dark:border-d-border bg-white/80 dark:bg-[rgba(11,14,26,0.6)] backdrop-blur-lg flex-shrink-0">
-                {/* Resumed bill info */}
-                {resumedBillInfo && (
-                    <div className="mb-3 p-3 bg-blue-50 dark:bg-[rgba(91,156,246,0.1)] border border-blue-200 dark:border-[rgba(91,156,246,0.2)] rounded-xl">
-                        <p className="text-blue-600 dark:text-d-blue font-medium text-sm">Resumed Bill · Paid: {formatCurrency(resumedBillInfo.amountPaid)} · Due: {formatCurrency(resumedBillInfo.remainingAmount)}</p>
-                    </div>
-                )}
 
                 {/* Totals */}
                 <div className="flex flex-col gap-2 mb-4">
@@ -1688,23 +1473,6 @@ const EmployeeDashboard = () => {
                 {/* Action Buttons */}
                 <div className="flex gap-3">
                     <button
-                        onClick={() => setShowHoldModal(true)}
-                        disabled={!activeBill || activeBill.items.length === 0}
-                        className="flex-1 py-3.5 px-4 rounded-xl bg-amber-50 dark:bg-[rgba(255,210,100,0.08)] border border-amber-200 dark:border-[rgba(255,210,100,0.2)] text-amber-600 dark:text-d-accent font-semibold text-[13px] flex items-center justify-center gap-2 hover:bg-amber-100 dark:hover:bg-[rgba(255,210,100,0.15)] hover:shadow-md dark:hover:shadow-[0_4px_16px_rgba(255,185,50,0.15)] transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                        <FiPause size={14} />
-                        Hold
-                        <span className="text-[10px] opacity-65 font-normal">Ctrl+2</span>
-                    </button>
-                    <button
-                        onClick={() => { fetchPendingBills(); setShowPendingModal(true); }}
-                        className="flex-1 py-3.5 px-4 rounded-xl bg-blue-50 dark:bg-[rgba(91,156,246,0.08)] border border-blue-200 dark:border-[rgba(91,156,246,0.2)] text-blue-600 dark:text-d-blue font-semibold text-[13px] flex items-center justify-center gap-2 hover:bg-blue-100 dark:hover:bg-[rgba(91,156,246,0.15)] hover:shadow-md dark:hover:shadow-[0_4px_16px_rgba(91,156,246,0.15)] transition-all"
-                    >
-                        <FiList size={14} />
-                        Pending
-                        <span className="text-[10px] opacity-65 font-normal">Ctrl+3</span>
-                    </button>
-                    <button
                         onClick={() => { setShowPaymentModal(true); setPaymentMethod('cash'); setCashGiven(''); setCreditPaidNow(''); }}
                         disabled={!activeBill || activeBill.items.length === 0}
                         className="flex-[2] py-3.5 px-4 rounded-xl bg-gradient-to-r from-amber-400 to-amber-500 dark:from-d-accent dark:to-d-accent-s text-white dark:text-d-card font-bold text-[14px] flex items-center justify-center gap-2 shadow-md dark:shadow-[0_6px_24px_rgba(255,185,50,0.3)] hover:-translate-y-0.5 hover:shadow-lg dark:hover:shadow-[0_10px_36px_rgba(255,185,50,0.45)] active:translate-y-0 transition-all disabled:opacity-50 disabled:cursor-not-allowed relative overflow-hidden group"
@@ -1729,7 +1497,7 @@ const EmployeeDashboard = () => {
                         </div>
 
                         <div className="text-center mb-6 p-4 bg-amber-50 dark:bg-[rgba(255,210,100,0.05)] border border-amber-200 dark:border-[rgba(255,210,100,0.1)] rounded-xl">
-                            <p className="text-sm text-slate-500 dark:text-d-muted mb-1">{resumedBillInfo ? 'Amount Due' : 'Total Amount'}</p>
+                            <p className="text-sm text-slate-500 dark:text-d-muted mb-1">Total Amount</p>
                             <p className="font-display text-3xl font-bold text-amber-600 dark:text-d-accent">{formatCurrency(effectiveTotal)}</p>
                         </div>
 
@@ -1909,149 +1677,10 @@ const EmployeeDashboard = () => {
                 </div>
             )}
 
-            {/* Hold Bill Modal */}
-            {showHoldModal && (
-                <div className="fixed inset-0 bg-black/40 dark:bg-black/60 flex items-center justify-center z-50 backdrop-blur-sm">
-                    <div className="bg-white dark:bg-d-elevated border border-slate-200 dark:border-[rgba(255,255,255,0.1)] rounded-2xl p-6 w-full max-w-md animate-pop-in shadow-2xl">
-                        <div className="flex items-center justify-between mb-6">
-                            <h3 className="text-xl font-bold text-slate-800 dark:text-d-text">Hold Bill</h3>
-                            <button onClick={() => setShowHoldModal(false)} className="p-2 hover:bg-slate-100 dark:hover:bg-[rgba(255,255,255,0.05)] rounded-lg text-slate-500 dark:text-d-muted">
-                                <FiX size={20} />
-                            </button>
-                        </div>
-
-                        <div className="space-y-4">
-                            <div>
-                                <label className="text-sm font-medium text-slate-500 dark:text-d-muted mb-1 block">Customer Name</label>
-                                <div className="relative">
-                                    <FiUser className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 dark:text-d-faint" />
-                                    <input
-                                        type="text"
-                                        value={holdCustomerName}
-                                        onChange={(e) => setHoldCustomerName(e.target.value)}
-                                        placeholder="Enter customer name..."
-                                        className="w-full pl-10 pr-4 py-3 bg-slate-50 dark:bg-[rgba(255,255,255,0.05)] border border-slate-200 dark:border-d-border rounded-xl text-slate-800 dark:text-d-text focus:border-amber-400 dark:focus:border-d-border-hover outline-none transition-all"
-                                    />
-                                </div>
-                            </div>
-
-                            <div>
-                                <label className="text-sm font-medium text-slate-500 dark:text-d-muted mb-1 block">Phone</label>
-                                <div className="relative">
-                                    <FiPhone className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 dark:text-d-faint" />
-                                    <input
-                                        type="tel"
-                                        value={holdCustomerPhone}
-                                        onChange={(e) => setHoldCustomerPhone(e.target.value)}
-                                        placeholder="Enter phone..."
-                                        className="w-full pl-10 pr-4 py-3 bg-slate-50 dark:bg-[rgba(255,255,255,0.05)] border border-slate-200 dark:border-d-border rounded-xl text-slate-800 dark:text-d-text focus:border-amber-400 dark:focus:border-d-border-hover outline-none transition-all"
-                                    />
-                                </div>
-                            </div>
-
-                            <div>
-                                <label className="text-sm font-medium text-slate-500 dark:text-d-muted mb-1 block">Amount Paid (Partial)</label>
-                                <div className="relative">
-                                    <FiDollarSign className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 dark:text-d-faint" />
-                                    <input
-                                        type="number"
-                                        value={holdAmountPaid}
-                                        onChange={(e) => setHoldAmountPaid(e.target.value)}
-                                        placeholder="0"
-                                        className="w-full pl-10 pr-4 py-3 bg-slate-50 dark:bg-[rgba(255,255,255,0.05)] border border-slate-200 dark:border-d-border rounded-xl text-slate-800 dark:text-d-text focus:border-amber-400 dark:focus:border-d-border-hover outline-none transition-all"
-                                    />
-                                </div>
-                            </div>
-
-                            <div className="p-4 bg-slate-50 dark:bg-[rgba(255,255,255,0.03)] border border-slate-200 dark:border-[rgba(255,255,255,0.05)] rounded-xl">
-                                <div className="flex justify-between text-sm mb-2">
-                                    <span className="text-slate-500 dark:text-d-muted">Bill Total</span>
-                                    <span className="font-medium text-slate-800 dark:text-d-text">{formatCurrency(activeTotal.total)}</span>
-                                </div>
-                                {parseFloat(holdAmountPaid) > 0 && (
-                                    <div className="flex justify-between text-sm">
-                                        <span className="text-slate-500 dark:text-d-muted">Remaining</span>
-                                        <span className="font-medium text-amber-600 dark:text-d-accent">{formatCurrency(activeTotal.total - parseFloat(holdAmountPaid || 0))}</span>
-                                    </div>
-                                )}
-                            </div>
-                        </div>
-
-                        <button
-                            onClick={handleHoldBill}
-                            disabled={holdingBill}
-                            className="w-full mt-6 py-4 bg-amber-500 dark:bg-d-accent text-white dark:text-d-card font-bold rounded-xl hover:shadow-[0_4px_20px_rgba(255,210,100,0.3)] transition-all disabled:opacity-50 flex items-center justify-center gap-2"
-                        >
-                            {holdingBill ? (
-                                <><div className="w-5 h-5 border-2 border-white dark:border-d-card border-t-transparent rounded-full animate-spin" /> Saving...</>
-                            ) : (
-                                <><FiPause size={20} /> Save as Pending</>
-                            )}
-                        </button>
-                    </div>
-                </div>
-            )}
-
-            {/* Pending Bills Modal */}
-            {showPendingModal && (
-                <div className="fixed inset-0 bg-black/40 dark:bg-black/60 flex items-center justify-center z-50 backdrop-blur-sm">
-                    <div className="bg-white dark:bg-d-elevated border border-slate-200 dark:border-[rgba(255,255,255,0.1)] rounded-2xl p-6 w-full max-w-2xl max-h-[80vh] flex flex-col animate-pop-in shadow-2xl">
-                        <div className="flex items-center justify-between mb-6">
-                            <h3 className="text-xl font-bold text-slate-800 dark:text-d-text">Pending Bills</h3>
-                            <button onClick={() => setShowPendingModal(false)} className="p-2 hover:bg-slate-100 dark:hover:bg-[rgba(255,255,255,0.05)] rounded-lg text-slate-500 dark:text-d-muted">
-                                <FiX size={20} />
-                            </button>
-                        </div>
-
-                        <div className="flex-1 overflow-auto dark-scrollbar">
-                            {loadingPending ? (
-                                <div className="flex items-center justify-center h-32">
-                                    <div className="w-8 h-8 border-2 border-amber-500 dark:border-d-accent border-t-transparent rounded-full animate-spin" />
-                                </div>
-                            ) : pendingBills.length === 0 ? (
-                                <div className="flex flex-col items-center justify-center h-32 text-slate-500 dark:text-d-muted">
-                                    <FiList size={32} />
-                                    <p className="mt-2">No pending bills</p>
-                                </div>
-                            ) : (
-                                <div className="space-y-3">
-                                    {pendingBills.map((bill) => (
-                                        <div key={bill._id} className="p-4 bg-slate-50 dark:bg-[rgba(255,255,255,0.03)] border border-slate-200 dark:border-d-glass-hover rounded-xl">
-                                            <div className="flex items-start justify-between mb-2">
-                                                <div>
-                                                    <h4 className="font-medium text-slate-800 dark:text-d-text">{bill.customerName || 'Walk-in Customer'}</h4>
-                                                    {bill.customerPhone && <p className="text-sm text-slate-500 dark:text-d-muted">{bill.customerPhone}</p>}
-                                                </div>
-                                                <p className="font-display text-lg font-bold text-amber-600 dark:text-d-accent">{formatCurrency(bill.total)}</p>
-                                            </div>
-                                            <div className="flex items-center gap-4 text-sm text-slate-500 dark:text-d-muted mb-3">
-                                                <span>{bill.items?.length || 0} items</span>
-                                                {bill.amountPaid > 0 && (
-                                                    <>
-                                                        <span>Paid: {formatCurrency(bill.amountPaid)}</span>
-                                                        <span className="text-amber-600 dark:text-d-accent font-medium">Due: {formatCurrency(bill.remainingAmount || bill.total - bill.amountPaid)}</span>
-                                                    </>
-                                                )}
-                                            </div>
-                                            <div className="flex gap-2">
-                                                <button onClick={() => loadPendingBill(bill)} className="flex-1 py-2 bg-emerald-500 dark:bg-d-green text-white dark:text-d-card rounded-lg hover:shadow-lg font-medium">Load Bill</button>
-                                                <button onClick={() => handleCancelPendingBill(bill._id)} className="px-4 py-2 bg-red-50 dark:bg-[rgba(255,107,107,0.1)] text-red-500 dark:text-d-red rounded-lg hover:bg-red-100 dark:hover:bg-[rgba(255,107,107,0.2)]">
-                                                    <FiTrash2 size={18} />
-                                                </button>
-                                            </div>
-                                        </div>
-                                    ))}
-                                </div>
-                            )}
-                        </div>
-                    </div>
-                </div>
-            )}
-
             {/* Success Modal */}
             {showSuccess && (
                 <div className="fixed inset-0 bg-black/40 dark:bg-black/60 flex items-center justify-center z-50 backdrop-blur-sm">
-                    <div className="bg-white dark:bg-d-elevated border border-emerald-200 dark:border-[rgba(52,232,161,0.2)] rounded-2xl p-8 text-center animate-pop-in max-w-sm shadow-2xl">
+                    <div className="bg-white dark:bg-d-elevated border border-emerald-200 dark:border-[rgba(52,232,161,0.2)] rounded-2xl p-8 text-center animate-pop-in w-96 shadow-2xl">
                         <div className="w-20 h-20 bg-emerald-50 dark:bg-[rgba(52,232,161,0.1)] rounded-full flex items-center justify-center mx-auto mb-4">
                             <FiCheck size={40} className="text-emerald-500 dark:text-d-green" />
                         </div>
@@ -2076,19 +1705,19 @@ const EmployeeDashboard = () => {
                                 )}
                             </div>
                         )}
-                        <div className="flex gap-3 mt-5">
+                        <div className="flex gap-3 mt-6">
                             <button
                                 onClick={() => { setShowSuccess(false); setSuccessData(null); }}
-                                className="flex-1 py-2.5 rounded-xl bg-slate-100 dark:bg-[rgba(255,255,255,0.05)] text-slate-600 dark:text-d-muted text-sm font-medium hover:bg-slate-200 dark:hover:bg-[rgba(255,255,255,0.1)] transition-colors"
+                                className="flex-1 py-3 rounded-xl bg-slate-100 dark:bg-[rgba(255,255,255,0.05)] text-slate-600 dark:text-d-muted text-sm font-medium hover:bg-slate-200 dark:hover:bg-[rgba(255,255,255,0.1)] transition-colors"
                             >
                                 Close
                             </button>
                             {successData?.bill && (
                                 <button
                                     onClick={() => printReceipt(successData, successData.bill)}
-                                    className="flex-1 py-2.5 rounded-xl bg-emerald-500 text-white text-sm font-medium hover:bg-emerald-600 transition-colors flex items-center justify-center gap-2"
+                                    className="flex-1 py-3 rounded-xl bg-emerald-500 text-white text-sm font-medium hover:bg-emerald-600 transition-colors flex items-center justify-center gap-2 whitespace-nowrap"
                                 >
-                                    <FiPrinter size={14} />
+                                    <FiPrinter size={16} />
                                     Print Receipt
                                 </button>
                             )}
@@ -2190,7 +1819,7 @@ const AdminDashboard = () => {
                 grossRevenue: backendStats.grossRevenue,
                 returns: backendStats.totalRefunded || 0,
                 netRevenue: backendStats.netRevenue,
-                cogs: backendStats.totalCOGS,
+                cogs: backendStats.totalCost || 0,
                 grossProfit: backendStats.grossProfit,
                 expenses,
                 netProfit,

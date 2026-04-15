@@ -147,11 +147,14 @@ export const getCashBook = async (req, res) => {
 
         if (startDate || endDate) {
             match.createdAt = {};
-            if (startDate) match.createdAt.$gte = new Date(startDate);
+            if (startDate) {
+                // Parse as local midnight (not UTC) by splitting the date string
+                const [y, m, d] = startDate.split('-').map(Number);
+                match.createdAt.$gte = new Date(y, m - 1, d, 0, 0, 0, 0);
+            }
             if (endDate) {
-                const end = new Date(endDate);
-                end.setHours(23, 59, 59, 999);
-                match.createdAt.$lte = end;
+                const [y, m, d] = endDate.split('-').map(Number);
+                match.createdAt.$lte = new Date(y, m - 1, d, 23, 59, 59, 999);
             }
         }
 
@@ -318,11 +321,13 @@ export const getCashBookSummary = async (req, res) => {
 
         const dateMatch = {};
         if (startDate || endDate) {
-            if (startDate) dateMatch.$gte = new Date(startDate);
+            if (startDate) {
+                const [y, m, d] = startDate.split('-').map(Number);
+                dateMatch.$gte = new Date(y, m - 1, d, 0, 0, 0, 0);
+            }
             if (endDate) {
-                const end = new Date(endDate);
-                end.setHours(23, 59, 59, 999);
-                dateMatch.$lte = end;
+                const [y, m, d] = endDate.split('-').map(Number);
+                dateMatch.$lte = new Date(y, m - 1, d, 23, 59, 59, 999);
             }
         }
 

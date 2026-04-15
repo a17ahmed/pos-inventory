@@ -40,7 +40,6 @@ const DAYS_OF_WEEK = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 's
 // Access control module definitions
 const ACCESS_MODULES = [
     { key: 'pos', label: 'POS / Sales', actions: ['view', 'create'] },
-    { key: 'pendingBills', label: 'Pending Bills', actions: ['view', 'create', 'resume', 'cancel'] },
     { key: 'returns', label: 'Returns', actions: ['view', 'create', 'cancel'] },
     { key: 'products', label: 'Products', actions: ['view', 'create', 'edit', 'delete', 'updateStock'] },
     { key: 'vendors', label: 'Vendors', actions: ['view', 'create', 'edit', 'delete', 'pay'] },

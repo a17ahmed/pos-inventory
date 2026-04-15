@@ -98,6 +98,7 @@ const login = async (req, res) => {
                     name: getAdmin.business.name,
                     email: getAdmin.business.email,
                     phone: getAdmin.business.phone,
+                    address: getAdmin.business.address,
                     currency: getAdmin.business.currency,
                     taxRate: getAdmin.business.taxRate,
                     cashTaxRate: getAdmin.business.cashTaxRate || 0,

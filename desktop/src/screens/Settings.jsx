@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useBusiness } from '../context/BusinessContext';
+import { updateBusiness } from '../services/api/business';
 import { useTheme } from '../context/ThemeContext';
 import {
     FiUser,
@@ -30,11 +31,27 @@ import {
 const Settings = () => {
     const navigate = useNavigate();
     const { user, logout } = useAuth();
-    const { business, config } = useBusiness();
+    const { business, config, refreshBusiness } = useBusiness();
     const { isDark, toggleTheme } = useTheme();
 
     const [activeModal, setActiveModal] = useState(null);
     const [serverUrl, setServerUrl] = useState(import.meta.env.VITE_API_URL || 'http://localhost:3000');
+    const [savingBusiness, setSavingBusiness] = useState(false);
+    const bizFormRef = useRef({});
+
+    const handleSaveBusiness = async () => {
+        setSavingBusiness(true);
+        try {
+            const id = business?._id || business?.id;
+            await updateBusiness(id, bizFormRef.current);
+            await refreshBusiness();
+            setActiveModal(null);
+        } catch (err) {
+            alert('Failed to save: ' + (err.response?.data?.message || err.message));
+        } finally {
+            setSavingBusiness(false);
+        }
+    };
 
     const handleLogout = async () => {
         if (window.confirm('Are you sure you want to logout?')) {
@@ -327,6 +344,7 @@ const Settings = () => {
                                 <input
                                     type="text"
                                     defaultValue={business?.name}
+                                    onChange={(e) => bizFormRef.current.name = e.target.value}
                                     className="w-full px-4 py-3 border border-slate-200 dark:border-d-border rounded-xl focus:ring-2 focus:ring-primary-500 bg-white dark:bg-d-elevated text-slate-800 dark:text-d-heading"
                                 />
                             </div>
@@ -338,6 +356,7 @@ const Settings = () => {
                                 <input
                                     type="tel"
                                     defaultValue={business?.phone}
+                                    onChange={(e) => bizFormRef.current.phone = e.target.value}
                                     className="w-full px-4 py-3 border border-slate-200 dark:border-d-border rounded-xl focus:ring-2 focus:ring-primary-500 bg-white dark:bg-d-elevated text-slate-800 dark:text-d-heading"
                                 />
                             </div>
@@ -349,6 +368,7 @@ const Settings = () => {
                                 <input
                                     type="email"
                                     defaultValue={business?.email}
+                                    onChange={(e) => bizFormRef.current.email = e.target.value}
                                     className="w-full px-4 py-3 border border-slate-200 dark:border-d-border rounded-xl focus:ring-2 focus:ring-primary-500 bg-white dark:bg-d-elevated text-slate-800 dark:text-d-heading"
                                 />
                             </div>
@@ -359,6 +379,7 @@ const Settings = () => {
                                 </label>
                                 <select
                                     defaultValue={business?.currency || 'PKR'}
+                                    onChange={(e) => bizFormRef.current.currency = e.target.value}
                                     className="w-full px-4 py-3 border border-slate-200 dark:border-d-border rounded-xl focus:ring-2 focus:ring-primary-500 bg-white dark:bg-d-elevated text-slate-800 dark:text-d-heading"
                                 >
                                     <option value="PKR">PKR - Pakistani Rupee</option>
@@ -374,10 +395,19 @@ const Settings = () => {
                                     <FiMapPin className="inline mr-2" size={14} />
                                     Address
                                 </label>
-                                <textarea
-                                    defaultValue={business?.address}
-                                    rows="2"
+                                <input
+                                    type="text"
+                                    defaultValue={business?.address?.street || ''}
+                                    onChange={(e) => bizFormRef.current.address = { ...(bizFormRef.current.address || business?.address || {}), street: e.target.value }}
+                                    placeholder="Street address"
                                     className="w-full px-4 py-3 border border-slate-200 dark:border-d-border rounded-xl focus:ring-2 focus:ring-primary-500 bg-white dark:bg-d-elevated text-slate-800 dark:text-d-heading"
+                                />
+                                <input
+                                    type="text"
+                                    defaultValue={business?.address?.city || ''}
+                                    onChange={(e) => bizFormRef.current.address = { ...(bizFormRef.current.address || business?.address || {}), city: e.target.value }}
+                                    placeholder="City"
+                                    className="w-full px-4 py-3 mt-2 border border-slate-200 dark:border-d-border rounded-xl focus:ring-2 focus:ring-primary-500 bg-white dark:bg-d-elevated text-slate-800 dark:text-d-heading"
                                 />
                             </div>
                             <div className="flex gap-3 pt-4">
@@ -387,9 +417,13 @@ const Settings = () => {
                                 >
                                     Cancel
                                 </button>
-                                <button className="flex-1 py-3 bg-primary-500 text-white rounded-xl font-medium hover:bg-primary-600 flex items-center justify-center gap-2">
+                                <button
+                                    onClick={handleSaveBusiness}
+                                    disabled={savingBusiness}
+                                    className="flex-1 py-3 bg-primary-500 text-white rounded-xl font-medium hover:bg-primary-600 flex items-center justify-center gap-2 disabled:opacity-50"
+                                >
                                     <FiSave size={18} />
-                                    Save
+                                    {savingBusiness ? 'Saving...' : 'Save'}
                                 </button>
                             </div>
                         </div>

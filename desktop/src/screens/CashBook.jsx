@@ -121,6 +121,46 @@ const CashBook = () => {
     }, [entries, searchQuery]);
 
     // =========================================================================
+    // Group entries by day with opening/closing balances
+    // =========================================================================
+
+    const groupedByDay = useMemo(() => {
+        if (filteredEntries.length === 0) return [];
+
+        const groups = [];
+        let currentDate = null;
+        let currentGroup = null;
+
+        // Entries come sorted newest first from backend
+        filteredEntries.forEach((entry) => {
+            const d = new Date(entry.createdAt);
+            const dateKey = d.toLocaleDateString();
+
+            if (dateKey !== currentDate) {
+                if (currentGroup) groups.push(currentGroup);
+                currentGroup = { dateKey, date: d, entries: [], openingBalance: 0, closingBalance: 0 };
+                currentDate = dateKey;
+            }
+            currentGroup.entries.push(entry);
+        });
+        if (currentGroup) groups.push(currentGroup);
+
+        // Calculate opening/closing for each day group
+        // Entries are oldest-first within each group
+        groups.forEach((g) => {
+            // Opening balance = balance before the first entry of the day
+            const first = g.entries[0];
+            g.openingBalance = first.direction === 'in'
+                ? first.runningBalance - first.amount
+                : first.runningBalance + first.amount;
+            // Closing balance = running balance of the last entry of the day
+            g.closingBalance = g.entries[g.entries.length - 1].runningBalance;
+        });
+
+        return groups;
+    }, [filteredEntries]);
+
+    // =========================================================================
     // Modal submit
     // =========================================================================
 
@@ -376,7 +416,7 @@ const CashBook = () => {
                                 <thead>
                                     <tr className="border-b border-slate-100 dark:border-d-border bg-slate-50 dark:bg-d-elevated">
                                         <th className="text-left px-4 py-3 font-semibold text-slate-500 dark:text-d-muted">#</th>
-                                        <th className="text-left px-4 py-3 font-semibold text-slate-500 dark:text-d-muted">Date</th>
+                                        <th className="text-left px-4 py-3 font-semibold text-slate-500 dark:text-d-muted">Time</th>
                                         <th className="text-left px-4 py-3 font-semibold text-slate-500 dark:text-d-muted">Type</th>
                                         <th className="text-left px-4 py-3 font-semibold text-slate-500 dark:text-d-muted">Description</th>
                                         <th className="text-right px-4 py-3 font-semibold text-d-green">Cash In</th>
@@ -385,44 +425,74 @@ const CashBook = () => {
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    {filteredEntries.map((entry) => {
-                                        const d = new Date(entry.createdAt);
-                                        return (
-                                            <tr key={entry._id} className="border-b border-slate-50 dark:border-d-border/50 hover:bg-slate-50 dark:hover:bg-d-elevated/50 transition-colors">
-                                                <td className="px-4 py-3 text-slate-400 dark:text-d-faint">{entry.entryNumber}</td>
-                                                <td className="px-4 py-3">
-                                                    <p className="text-slate-700 dark:text-d-text">{d.toLocaleDateString()}</p>
-                                                    <p className="text-xs text-slate-400 dark:text-d-faint">{d.toLocaleTimeString()}</p>
-                                                </td>
-                                                <td className="px-4 py-3">
-                                                    <span className={`inline-block px-2.5 py-1 rounded-lg text-xs font-medium ${TYPE_COLORS[entry.type] || 'bg-slate-100 text-slate-600'}`}>
-                                                        {TYPE_LABELS[entry.type] || entry.type}
+                                    {groupedByDay.map((group) => (
+                                        <React.Fragment key={group.dateKey}>
+                                            {/* Day header with opening balance */}
+                                            <tr className="bg-slate-100/80 dark:bg-d-elevated border-b border-slate-200 dark:border-d-border">
+                                                <td colSpan={4} className="px-4 py-2.5">
+                                                    <span className="font-semibold text-slate-700 dark:text-d-heading text-sm">
+                                                        {group.date.toLocaleDateString('en-US', { weekday: 'short', year: 'numeric', month: 'short', day: 'numeric' })}
                                                     </span>
                                                 </td>
-                                                <td className="px-4 py-3">
-                                                    <p className="text-slate-700 dark:text-d-text">{entry.description}</p>
-                                                    {entry.referenceNumber && (
-                                                        <p className="text-xs text-slate-400 dark:text-d-faint">{entry.referenceNumber}</p>
-                                                    )}
-                                                    {entry.note && (
-                                                        <p className="text-xs text-slate-400 dark:text-d-faint italic">{entry.note}</p>
-                                                    )}
-                                                    {entry.performedBy && (
-                                                        <p className="text-xs text-slate-400 dark:text-d-faint">by {entry.performedBy}</p>
-                                                    )}
+                                                <td colSpan={2} className="px-4 py-2.5 text-right text-xs text-slate-500 dark:text-d-muted font-medium">
+                                                    Opening Balance
                                                 </td>
-                                                <td className="px-4 py-3 text-right font-medium text-d-green">
-                                                    {entry.direction === 'in' ? formatCurrency(entry.amount) : ''}
-                                                </td>
-                                                <td className="px-4 py-3 text-right font-medium text-d-red">
-                                                    {entry.direction === 'out' ? formatCurrency(entry.amount) : ''}
-                                                </td>
-                                                <td className="px-4 py-3 text-right font-bold text-slate-800 dark:text-d-heading">
-                                                    {formatCurrency(entry.runningBalance)}
+                                                <td className="px-4 py-2.5 text-right font-semibold text-slate-700 dark:text-d-heading text-sm">
+                                                    {formatCurrency(group.openingBalance)}
                                                 </td>
                                             </tr>
-                                        );
-                                    })}
+
+                                            {/* Day entries */}
+                                            {group.entries.map((entry) => {
+                                                const d = new Date(entry.createdAt);
+                                                return (
+                                                    <tr key={entry._id} className="border-b border-slate-50 dark:border-d-border/50 hover:bg-slate-50 dark:hover:bg-[rgba(255,255,255,0.03)] transition-colors">
+                                                        <td className="px-4 py-3 text-slate-400 dark:text-d-faint">{entry.entryNumber}</td>
+                                                        <td className="px-4 py-3">
+                                                            <p className="text-xs text-slate-400 dark:text-d-faint">{d.toLocaleTimeString()}</p>
+                                                        </td>
+                                                        <td className="px-4 py-3">
+                                                            <span className={`inline-block px-2.5 py-1 rounded-lg text-xs font-medium ${TYPE_COLORS[entry.type] || 'bg-slate-100 text-slate-600'}`}>
+                                                                {TYPE_LABELS[entry.type] || entry.type}
+                                                            </span>
+                                                        </td>
+                                                        <td className="px-4 py-3">
+                                                            <p className="text-slate-700 dark:text-d-text">{entry.description}</p>
+                                                            {entry.referenceNumber && (
+                                                                <p className="text-xs text-slate-400 dark:text-d-faint">{entry.referenceNumber}</p>
+                                                            )}
+                                                            {entry.note && (
+                                                                <p className="text-xs text-slate-400 dark:text-d-faint italic">{entry.note}</p>
+                                                            )}
+                                                            {entry.performedBy && (
+                                                                <p className="text-xs text-slate-400 dark:text-d-faint">by {entry.performedBy}</p>
+                                                            )}
+                                                        </td>
+                                                        <td className="px-4 py-3 text-right font-medium text-d-green">
+                                                            {entry.direction === 'in' ? formatCurrency(entry.amount) : ''}
+                                                        </td>
+                                                        <td className="px-4 py-3 text-right font-medium text-d-red">
+                                                            {entry.direction === 'out' ? formatCurrency(entry.amount) : ''}
+                                                        </td>
+                                                        <td className="px-4 py-3 text-right font-bold text-slate-800 dark:text-d-heading">
+                                                            {formatCurrency(entry.runningBalance)}
+                                                        </td>
+                                                    </tr>
+                                                );
+                                            })}
+
+                                            {/* Closing balance row */}
+                                            <tr className="bg-slate-100 dark:bg-d-elevated border-b-2 border-slate-200 dark:border-d-border">
+                                                <td colSpan={4} className="px-4 py-2.5"></td>
+                                                <td colSpan={2} className="px-4 py-2.5 text-right text-xs font-semibold text-slate-600 dark:text-d-text">
+                                                    Closing Balance
+                                                </td>
+                                                <td className="px-4 py-2.5 text-right font-bold text-slate-800 dark:text-d-heading text-sm">
+                                                    {formatCurrency(group.closingBalance)}
+                                                </td>
+                                            </tr>
+                                        </React.Fragment>
+                                    ))}
                                 </tbody>
                             </table>
                         </div>

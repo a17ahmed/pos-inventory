@@ -53,7 +53,6 @@ import Receipts from './screens/Receipts';
 import Expenses from './screens/Expenses';
 import Reports from './screens/Reports';
 import Settings from './screens/Settings';
-import Pending from './screens/Pending';
 import Profile from './screens/Profile';
 import Returns from './screens/Returns';
 import Vendors from './screens/Vendors';
@@ -218,16 +217,6 @@ function AppContent() {
                     <ProtectedRoute>
                         <Layout>
                             <Settings />
-                        </Layout>
-                    </ProtectedRoute>
-                }
-            />
-            <Route
-                path="/pending"
-                element={
-                    <ProtectedRoute>
-                        <Layout>
-                            <Pending />
                         </Layout>
                     </ProtectedRoute>
                 }

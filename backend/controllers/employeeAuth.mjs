@@ -69,11 +69,17 @@ export const employeeLogin = async (req, res) => {
                 role: employee.role
             },
             business: {
-                id: employee.business._id,
+                _id: employee.business._id,
                 name: employee.business.name,
+                phone: employee.business.phone,
+                address: employee.business.address,
                 currency: employee.business.currency,
                 taxRate: employee.business.taxRate,
-                taxLabel: employee.business.taxLabel
+                cashTaxRate: employee.business.cashTaxRate || 0,
+                cardTaxRate: employee.business.cardTaxRate || 0,
+                taxLabel: employee.business.taxLabel,
+                businessType: employee.business.businessType,
+                settings: employee.business.settings
             }
         });
     } catch (error) {

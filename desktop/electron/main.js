@@ -182,13 +182,17 @@ ipcMain.handle('get-platform', () => {
     return process.platform;
 });
 
-// Handle print request — sends ESC/POS commands directly to thermal printer
+// Handle print request — uses node-thermal-printer for cross-platform support
 ipcMain.handle('print-receipt', async (event, { receiptData }) => {
     const { execSync } = require('child_process');
     const fs = require('fs');
     const os = require('os');
+    const ThermalPrinter = require('node-thermal-printer').printer;
+    const PrinterTypes = require('node-thermal-printer').types;
 
-    let tmpFile = null;
+    // Find the temp file path for the printer output
+    const tmpFile = path.join(os.tmpdir(), 'receipt_' + Date.now() + '.bin');
+
     try {
         const {
             storeName, storeAddress, storePhone, cashierName,
@@ -197,66 +201,56 @@ ipcMain.handle('print-receipt', async (event, { receiptData }) => {
             paymentMethod, amountPaid, cashGiven, change, currency
         } = receiptData;
 
-        const ESC = 0x1B;
-        const GS = 0x1D;
-        const W = 48; // full 80mm thermal width
-        const commands = [];
-
-        const addBytes = (...bytes) => commands.push(Buffer.from(bytes));
-        const addText = (text) => commands.push(Buffer.from(text, 'utf8'));
-        const feed = (n = 1) => { for (let i = 0; i < n; i++) addText('\n'); };
-        const line = () => addText('-'.repeat(W) + '\n');
-        const dblLine = () => addText('='.repeat(W) + '\n');
-        const lr = (left, right) => {
-            left = String(left); right = String(right);
-            const gap = W - left.length - right.length;
-            addText(left + ' '.repeat(Math.max(1, gap)) + right + '\n');
-        };
+        const W = 48;
         const money = (amt) => currency + ' ' + Number(amt).toLocaleString();
         const num = (n) => Number(n).toLocaleString();
 
-        // Initialize
-        addBytes(ESC, 0x40);
-        feed(1);
+        // Create printer instance — writes to temp file
+        const printer = new ThermalPrinter({
+            type: PrinterTypes.EPSON,
+            interface: tmpFile,
+            width: W,
+            characterSet: 'PC437_USA',
+            removeSpecialCharacters: false,
+            lineCharacter: '-',
+        });
 
-        // ──── STORE HEADER (hardware centered) ────
-        addBytes(ESC, 0x61, 1); // printer hardware center
-        addBytes(ESC, 0x45, 1); // bold
-        addBytes(GS, 0x21, 0x01); // double height
-        addText((storeName || 'STORE').toUpperCase() + '\n');
-        addBytes(GS, 0x21, 0x00); // normal
-        addBytes(ESC, 0x45, 0);
-        if (storeAddress) addText(storeAddress + '\n');
-        if (storePhone) addText('Tel: ' + storePhone + '\n');
-        feed();
-        addBytes(ESC, 0x45, 1);
-        addText('SALE INVOICE\n');
-        addBytes(ESC, 0x45, 0);
-        addBytes(ESC, 0x61, 0); // back to left align
-        line();
+        // ──── STORE HEADER ────
+        printer.alignCenter();
+        printer.setTextDoubleHeight();
+        printer.bold(true);
+        printer.println((storeName || 'STORE').toUpperCase());
+        printer.setTextNormal();
+        printer.bold(false);
+        if (storeAddress) printer.println(storeAddress);
+        if (storePhone) printer.println('Tel: ' + storePhone);
+        printer.newLine();
+        printer.bold(true);
+        printer.println('SALE INVOICE');
+        printer.bold(false);
+        printer.alignLeft();
+        printer.drawLine();
 
         // ──── BILL INFO ────
-        lr('Inv No: ' + billNumber, date);
-        if (cashierName) lr('Cashier: ' + cashierName, '');
+        printer.leftRight('Inv No: ' + billNumber, date);
+        if (cashierName) printer.leftRight('Cashier: ' + cashierName, '');
         if (customerName && customerName !== 'Walk-in') {
-            lr('Customer: ' + customerName, '');
+            printer.leftRight('Customer: ' + customerName, '');
         }
-        line();
+        printer.drawLine();
 
         // ──── ITEMS TABLE ────
-        // Columns: #(3) Name(16) Qty(5) Rate(7) Amt(9) Disc(8) = 48
         const c = { sr: 3, name: 16, qty: 5, rate: 7, amt: 9, disc: 8 };
-        addBytes(ESC, 0x45, 1);
-        addText(
-            '#'.padEnd(c.sr) +
-            'Item'.padEnd(c.name) +
-            'Qty'.padStart(c.qty) +
-            'Rate'.padStart(c.rate) +
-            'Amt'.padStart(c.amt) +
-            'Disc'.padStart(c.disc) + '\n'
-        );
-        addBytes(ESC, 0x45, 0);
-        line();
+
+        printer.tableCustom([
+            { text: '#', cols: c.sr, bold: true },
+            { text: 'Item', cols: c.name, bold: true },
+            { text: 'Qty', cols: c.qty, align: 'RIGHT', bold: true },
+            { text: 'Rate', cols: c.rate, align: 'RIGHT', bold: true },
+            { text: 'Amt', cols: c.amt, align: 'RIGHT', bold: true },
+            { text: 'Disc', cols: c.disc, align: 'RIGHT', bold: true },
+        ]);
+        printer.drawLine();
 
         let totalQty = 0;
         let totalAmt = 0;
@@ -273,97 +267,147 @@ ipcMain.handle('print-receipt', async (event, { receiptData }) => {
             let name = item.name;
             if (name.length > c.name - 1) name = name.substring(0, c.name - 2) + '.';
 
-            addText(
-                String(i + 1).padEnd(c.sr) +
-                name.padEnd(c.name) +
-                String(item.qty).padStart(c.qty) +
-                num(rate).padStart(c.rate) +
-                num(amount).padStart(c.amt) +
-                (disc > 0 ? ('-' + num(disc)).padStart(c.disc) : '0'.padStart(c.disc)) + '\n'
-            );
+            printer.tableCustom([
+                { text: String(i + 1), cols: c.sr },
+                { text: name, cols: c.name },
+                { text: String(item.qty), cols: c.qty, align: 'RIGHT' },
+                { text: num(rate), cols: c.rate, align: 'RIGHT' },
+                { text: num(amount), cols: c.amt, align: 'RIGHT' },
+                { text: disc > 0 ? '-' + num(disc) : '0', cols: c.disc, align: 'RIGHT' },
+            ]);
         });
 
-        line();
+        printer.drawLine();
+
         // Total row
-        addBytes(ESC, 0x45, 1);
-        addText(
-            'Total'.padEnd(c.sr + c.name) +
-            String(totalQty).padStart(c.qty) +
-            ''.padStart(c.rate) +
-            num(totalAmt).padStart(c.amt) +
-            (totalDisc > 0 ? ('-' + num(totalDisc)).padStart(c.disc) : '0'.padStart(c.disc)) + '\n'
-        );
-        addBytes(ESC, 0x45, 0);
-        line();
+        printer.bold(true);
+        printer.tableCustom([
+            { text: 'Total', cols: c.sr + c.name },
+            { text: String(totalQty), cols: c.qty, align: 'RIGHT' },
+            { text: '', cols: c.rate },
+            { text: num(totalAmt), cols: c.amt, align: 'RIGHT' },
+            { text: totalDisc > 0 ? '-' + num(totalDisc) : '0', cols: c.disc, align: 'RIGHT' },
+        ]);
+        printer.bold(false);
+        printer.drawLine();
 
         // ──── TOTALS ────
-        lr('Sub Total:', money(subtotal));
-        if (itemDiscounts > 0) lr('Item Discount:', '-' + money(itemDiscounts));
-        if (billDiscount > 0) lr('Bill Discount:', '-' + money(billDiscount));
-        if (tax > 0) lr('Tax:', money(tax));
-        dblLine();
+        printer.leftRight('Sub Total:', money(subtotal));
+        if (itemDiscounts > 0) printer.leftRight('Item Discount:', '-' + money(itemDiscounts));
+        if (billDiscount > 0) printer.leftRight('Bill Discount:', '-' + money(billDiscount));
+        if (tax > 0) printer.leftRight('Tax:', money(tax));
+        printer.drawLine('=');
 
         // ──── GRAND TOTAL ────
-        addBytes(ESC, 0x45, 1);
-        addBytes(GS, 0x21, 0x01); // double height
-        lr('Total:', money(total));
-        addBytes(GS, 0x21, 0x00);
-        addBytes(ESC, 0x45, 0);
-        dblLine();
+        printer.bold(true);
+        printer.setTextDoubleHeight();
+        printer.leftRight('Total:', money(total));
+        printer.setTextNormal();
+        printer.bold(false);
+        printer.drawLine('=');
 
         // ──── PAYMENT ────
-        lr('Payment:', paymentMethod.toUpperCase());
+        printer.leftRight('Payment:', (paymentMethod || 'cash').toUpperCase());
         if (paymentMethod === 'cash' && cashGiven > 0) {
-            lr('Tendered:', money(cashGiven));
-            lr('Change:', money(change));
+            printer.leftRight('Tendered:', money(cashGiven));
+            printer.leftRight('Change:', money(change));
         }
 
         // Show partial payment for credit/other methods
         const paidOnBill = amountPaid ?? 0;
-        if (paymentMethod !== 'cash' && paymentMethod !== 'card' && paidOnBill > 0) {
-            lr('Paid:', money(paidOnBill));
+        if (paymentMethod !== 'cash' && paymentMethod !== 'card' && paidOnBill > 0 && paidOnBill < total) {
+            printer.leftRight('Paid:', money(paidOnBill));
         }
 
         // ──── ACCOUNT BALANCE ────
         if (customerName && customerName !== 'Walk-in') {
             const billDue = Math.max(0, total - paidOnBill);
-            if (billDue > 0) lr('This Bill Due:', money(billDue));
+            if (billDue > 0) printer.leftRight('This Bill Due:', money(billDue));
             const newBalance = (customerBalance || 0) + billDue;
-            lr('Account Balance:', money(newBalance));
+            printer.leftRight('Account Balance:', money(newBalance));
         }
 
-        line();
+        printer.drawLine();
 
         // ──── FOOTER ────
-        addBytes(ESC, 0x61, 1); // hardware center
-        addBytes(ESC, 0x45, 1);
-        addText('THANK YOU!\n');
-        addBytes(ESC, 0x45, 0);
-        addBytes(ESC, 0x61, 0); // left
-        line();
-        addBytes(ESC, 0x61, 1); // hardware center
-        addText('Software by Ahmed\n');
-        addText('0307-0019031\n');
-        addBytes(ESC, 0x61, 0); // left
-        feed(3);
+        printer.alignCenter();
+        printer.bold(true);
+        printer.println('THANK YOU!');
+        printer.bold(false);
+        printer.alignLeft();
+        printer.drawLine();
+        printer.alignCenter();
+        printer.println('Software by Ahmed');
+        printer.println('0307-0019031');
+        printer.alignLeft();
+        printer.newLine();
+        printer.newLine();
+        printer.newLine();
 
         // Cut paper
-        addBytes(GS, 0x56, 0x42, 0x00);
+        printer.partialCut();
 
-        // Send to printer
-        const buffer = Buffer.concat(commands);
-        tmpFile = path.join(os.tmpdir(), 'receipt_' + Date.now() + '.bin');
+        // Get the raw ESC/POS buffer
+        const buffer = printer.getBuffer();
+
+        // Write buffer to temp file
         fs.writeFileSync(tmpFile, buffer);
 
-        try {
-            execSync(`lp -d STMicroelectronics_POS80_Printer_USB -o raw "${tmpFile}" 2>&1`, { timeout: 10000 });
-        } catch (lpError) {
-            const printers = execSync('lpstat -p 2>/dev/null', { timeout: 5000 }).toString();
-            const posMatch = printers.match(/printer (\S*(?:POS|STM|Thermal|Receipt|Speed)\S*)/i);
-            if (posMatch) {
-                execSync(`lp -d "${posMatch[1]}" -o raw "${tmpFile}" 2>&1`, { timeout: 10000 });
-            } else {
-                throw new Error('No thermal printer found. Printers: ' + printers);
+        // ──── SEND TO PRINTER (cross-platform) ────
+        const platform = process.platform;
+
+        if (platform === 'win32') {
+            // Windows: try direct USB port, then shared printer
+            let printed = false;
+            const ports = ['USB001', 'USB002', 'USB003'];
+            for (const port of ports) {
+                try {
+                    execSync(`copy /b "${tmpFile}" \\\\.\\${port}`, {
+                        shell: 'cmd.exe',
+                        timeout: 10000,
+                        windowsHide: true,
+                    });
+                    printed = true;
+                    break;
+                } catch (e) { /* try next port */ }
+            }
+
+            if (!printed) {
+                // Try finding printer via wmic
+                try {
+                    const wmicOut = execSync('wmic printer get name,portname /format:csv 2>nul', {
+                        encoding: 'utf8',
+                        shell: 'cmd.exe',
+                        timeout: 5000,
+                        windowsHide: true,
+                    });
+                    const match = wmicOut.match(/,(.*(?:POS|Thermal|Receipt|Speed|STM)[^,]*),/i);
+                    if (match) {
+                        execSync(`copy /b "${tmpFile}" "\\\\%COMPUTERNAME%\\${match[1].trim()}"`, {
+                            shell: 'cmd.exe',
+                            timeout: 10000,
+                            windowsHide: true,
+                        });
+                        printed = true;
+                    }
+                } catch (e) { /* wmic failed */ }
+            }
+
+            if (!printed) {
+                throw new Error('No thermal printer found on Windows. Make sure the printer is connected and drivers are installed.');
+            }
+        } else {
+            // macOS / Linux: use CUPS lp command
+            try {
+                execSync(`lp -d STMicroelectronics_POS80_Printer_USB -o raw "${tmpFile}" 2>&1`, { timeout: 10000 });
+            } catch (lpError) {
+                const printers = execSync('lpstat -p 2>/dev/null', { timeout: 5000 }).toString();
+                const posMatch = printers.match(/printer (\S*(?:POS|STM|Thermal|Receipt|Speed)\S*)/i);
+                if (posMatch) {
+                    execSync(`lp -d "${posMatch[1]}" -o raw "${tmpFile}" 2>&1`, { timeout: 10000 });
+                } else {
+                    throw new Error('No thermal printer found. Printers: ' + printers);
+                }
             }
         }
 
@@ -372,6 +416,6 @@ ipcMain.handle('print-receipt', async (event, { receiptData }) => {
         console.error('Print error:', error);
         return { success: false, error: error.message };
     } finally {
-        if (tmpFile) try { fs.unlinkSync(tmpFile); } catch (e) { /* ignore */ }
+        try { fs.unlinkSync(tmpFile); } catch (e) { /* ignore */ }
     }
 });

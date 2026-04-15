@@ -3,7 +3,6 @@ import { useBusiness } from '../context/BusinessContext';
 import { useAuth } from '../context/AuthContext';
 import { getProducts } from '../services/api/products';
 import { createReceipt } from '../services/api/receipts';
-import { getPendingBills, createPendingBill, deletePendingBill as deletePendingBillApi } from '../services/api/pendingBills';
 import {
     FiSearch,
     FiPlus,
@@ -15,9 +14,6 @@ import {
     FiDollarSign,
     FiX,
     FiCheck,
-    FiPause,
-    FiList,
-    FiPhone,
     FiSmartphone,
 } from 'react-icons/fi';
 
@@ -46,20 +42,6 @@ const Sales = () => {
     const [showSuccess, setShowSuccess] = useState(false);
     const [successData, setSuccessData] = useState(null);
 
-    // Hold Bill Modal State
-    const [showHoldModal, setShowHoldModal] = useState(false);
-    const [holdCustomerName, setHoldCustomerName] = useState('');
-    const [holdCustomerPhone, setHoldCustomerPhone] = useState('');
-    const [holdAmountPaid, setHoldAmountPaid] = useState('');
-    const [holdingBill, setHoldingBill] = useState(false);
-
-    // Pending Bills Modal State
-    const [showPendingModal, setShowPendingModal] = useState(false);
-    const [pendingBills, setPendingBills] = useState([]);
-    const [loadingPending, setLoadingPending] = useState(false);
-    const [pendingBillId, setPendingBillId] = useState(null);
-    const [resumedBillInfo, setResumedBillInfo] = useState(null);
-
     // Generate idempotency key when cart changes
     useEffect(() => {
         if (cart.length > 0 && !idempotencyKey) {
@@ -67,8 +49,6 @@ const Sales = () => {
         }
         if (cart.length === 0) {
             setIdempotencyKey(null);
-            setPendingBillId(null);
-            setResumedBillInfo(null);
         }
     }, [cart.length]);
 
@@ -92,33 +72,20 @@ const Sales = () => {
                 return;
             }
 
-            // F2 - Hold Bill
-            if (e.key === 'F2' && cart.length > 0 && !showPaymentModal && !showHoldModal) {
-                e.preventDefault();
-                setShowHoldModal(true);
-            }
-            // F3 - Load Pending Bills
-            if (e.key === 'F3' && !showPaymentModal && !showHoldModal) {
-                e.preventDefault();
-                fetchPendingBills();
-                setShowPendingModal(true);
-            }
             // F12 - Open Payment Modal (checkout)
-            if (e.key === 'F12' && cart.length > 0 && !showPaymentModal && !showHoldModal) {
+            if (e.key === 'F12' && cart.length > 0 && !showPaymentModal) {
                 e.preventDefault();
                 openPaymentModal();
             }
             // Escape - Close modals
             if (e.key === 'Escape') {
                 if (showPaymentModal) setShowPaymentModal(false);
-                if (showHoldModal) setShowHoldModal(false);
-                if (showPendingModal) setShowPendingModal(false);
             }
         };
 
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [cart.length, showPaymentModal, showHoldModal, showPendingModal, processing]);
+    }, [cart.length, showPaymentModal, processing]);
 
     useEffect(() => {
         fetchProducts();
@@ -136,18 +103,6 @@ const Sales = () => {
             console.error('Error fetching products:', error);
         } finally {
             setLoading(false);
-        }
-    };
-
-    const fetchPendingBills = async () => {
-        setLoadingPending(true);
-        try {
-            const res = await getPendingBills();
-            setPendingBills(res.data || []);
-        } catch (error) {
-            console.error('Error fetching pending bills:', error);
-        } finally {
-            setLoadingPending(false);
         }
     };
 
@@ -190,17 +145,13 @@ const Sales = () => {
         setCustomerName('');
         setDiscount(0);
         setIdempotencyKey(null);
-        setPendingBillId(null);
-        setResumedBillInfo(null);
     };
 
     const subtotal = cart.reduce((sum, item) => sum + item.price * item.qty, 0);
     const discountAmount = (subtotal * discount) / 100;
     const total = subtotal - discountAmount;
 
-    // For resumed bills, calculate effective total (remaining amount)
-    const effectiveTotal = resumedBillInfo ? resumedBillInfo.remainingAmount : total;
-    const changeAmount = Math.max(0, parseFloat(cashGiven || 0) - effectiveTotal);
+    const changeAmount = Math.max(0, parseFloat(cashGiven || 0) - total);
 
     const openPaymentModal = () => {
         setCashGiven('');
@@ -212,7 +163,7 @@ const Sales = () => {
         if (cart.length === 0) return;
 
         // Validate cash amount for cash payments
-        if (paymentMethod === 'cash' && parseFloat(cashGiven || 0) < effectiveTotal) {
+        if (paymentMethod === 'cash' && parseFloat(cashGiven || 0) < total) {
             alert('Cash amount is less than the total bill');
             return;
         }
@@ -241,26 +192,13 @@ const Sales = () => {
                 cashGiven: parseFloat(cashGiven || 0),
                 changeAmount,
                 idempotencyKey,
-                // For resumed pending bills
-                pendingBillRef: pendingBillId || null,
-                amountPreviouslyPaid: resumedBillInfo?.amountPaid || 0,
-                amountDue: effectiveTotal,
             };
 
             const response = await createReceipt(orderData);
 
-            // If this was a resumed pending bill, delete it
-            if (pendingBillId) {
-                try {
-                    await deletePendingBillApi(pendingBillId);
-                } catch (err) {
-                    console.error('Error deleting pending bill:', err);
-                }
-            }
-
             setSuccessData({
                 billNumber: response.data?.billNumber,
-                total: effectiveTotal,
+                total: total,
                 cashGiven: parseFloat(cashGiven || 0),
                 change: changeAmount,
                 paymentMethod,
@@ -290,76 +228,6 @@ const Sales = () => {
         }
     };
 
-    const handleHoldBill = async () => {
-        if (cart.length === 0) return;
-
-        setHoldingBill(true);
-        try {
-            await createPendingBill({
-                billName: `Bill ${Date.now()}`,
-                items: cart.map((item) => ({
-                    _id: item._id,
-                    name: item.name,
-                    price: item.price,
-                    qty: item.qty,
-                    gst: item.gst || 0,
-                })),
-                customerName: holdCustomerName.trim() || 'Walk-in Customer',
-                customerPhone: holdCustomerPhone.trim(),
-                subtotal,
-                tax: 0,
-                total,
-                amountPaid: parseFloat(holdAmountPaid) || 0,
-            });
-
-            setShowHoldModal(false);
-            setHoldCustomerName('');
-            setHoldCustomerPhone('');
-            setHoldAmountPaid('');
-            clearCart();
-            alert('Bill saved as pending');
-        } catch (error) {
-            console.error('Error holding bill:', error);
-            alert(error.response?.data?.message || 'Failed to save pending bill');
-        } finally {
-            setHoldingBill(false);
-        }
-    };
-
-    const loadPendingBill = (bill) => {
-        // Load items into cart
-        const cartItems = bill.items.map((item) => ({
-            _id: item._id,
-            name: item.name,
-            price: item.price,
-            qty: item.qty,
-            gst: item.gst || 0,
-        }));
-        setCart(cartItems);
-        setCustomerName(bill.customerName || '');
-        setPendingBillId(bill._id);
-        setResumedBillInfo({
-            amountPaid: bill.amountPaid || 0,
-            remainingAmount: bill.remainingAmount || bill.total,
-            originalTotal: bill.total,
-        });
-        // Generate new idempotency key for this checkout
-        setIdempotencyKey(`${Date.now()}-${Math.random().toString(36).slice(2, 11)}`);
-        setShowPendingModal(false);
-    };
-
-    const handleDeletePendingBill = async (billId) => {
-        if (!confirm('Are you sure you want to delete this pending bill?')) return;
-
-        try {
-            await deletePendingBillApi(billId);
-            setPendingBills((prev) => prev.filter((b) => b._id !== billId));
-        } catch (error) {
-            console.error('Error deleting pending bill:', error);
-            alert('Failed to delete pending bill');
-        }
-    };
-
     const formatCurrency = (amount) => {
         return `${business?.currency || 'PKR'} ${(amount || 0).toLocaleString()}`;
     };
@@ -383,8 +251,6 @@ const Sales = () => {
                     </div>
                     {/* Shortcut hints */}
                     <div className="flex gap-2 text-xs text-slate-400">
-                        <span className="px-2 py-1 bg-slate-100 rounded">F2 Hold</span>
-                        <span className="px-2 py-1 bg-slate-100 rounded">F3 Pending</span>
                         <span className="px-2 py-1 bg-slate-100 rounded">F12 Pay</span>
                     </div>
                 </div>
@@ -475,16 +341,6 @@ const Sales = () => {
                             </button>
                         )}
                     </div>
-                    {/* Resumed bill indicator */}
-                    {resumedBillInfo && (
-                        <div className="mt-2 p-2 bg-blue-50 rounded-lg text-sm">
-                            <p className="text-blue-700 font-medium">Resumed Bill</p>
-                            <p className="text-blue-600">
-                                Paid: {formatCurrency(resumedBillInfo.amountPaid)} |
-                                Due: {formatCurrency(resumedBillInfo.remainingAmount)}
-                            </p>
-                        </div>
-                    )}
                 </div>
 
                 {/* Cart Items */}
@@ -571,32 +427,13 @@ const Sales = () => {
                         </div>
                     )}
                     <div className="flex justify-between text-xl font-bold text-slate-800 pt-2 border-t border-slate-200">
-                        <span>{resumedBillInfo ? 'Amount Due' : 'Total'}</span>
-                        <span className="text-green-600">{formatCurrency(effectiveTotal)}</span>
+                        <span>Total</span>
+                        <span className="text-green-600">{formatCurrency(total)}</span>
                     </div>
                 </div>
 
                 {/* Action Buttons */}
                 <div className="p-4 space-y-2">
-                    {/* Hold & Pending Buttons */}
-                    <div className="flex gap-2">
-                        <button
-                            onClick={() => setShowHoldModal(true)}
-                            disabled={cart.length === 0}
-                            className="flex-1 py-2 bg-amber-500 text-white font-medium rounded-lg hover:bg-amber-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-                        >
-                            <FiPause size={16} />
-                            Hold (F2)
-                        </button>
-                        <button
-                            onClick={() => { fetchPendingBills(); setShowPendingModal(true); }}
-                            className="flex-1 py-2 bg-blue-500 text-white font-medium rounded-lg hover:bg-blue-600 transition-colors flex items-center justify-center gap-2"
-                        >
-                            <FiList size={16} />
-                            Pending (F3)
-                        </button>
-                    </div>
-
                     {/* Checkout Button */}
                     <button
                         onClick={openPaymentModal}
@@ -626,10 +463,10 @@ const Sales = () => {
                         {/* Total Display */}
                         <div className="text-center mb-6 p-4 bg-slate-50 rounded-xl">
                             <p className="text-sm text-slate-500 mb-1">
-                                {resumedBillInfo ? 'Amount Due' : 'Total Amount'}
+                                Total Amount
                             </p>
                             <p className="text-3xl font-bold text-slate-800">
-                                {formatCurrency(effectiveTotal)}
+                                {formatCurrency(total)}
                             </p>
                         </div>
 
@@ -675,7 +512,7 @@ const Sales = () => {
 
                                 {/* Quick amount buttons */}
                                 <div className="flex gap-2 mt-2">
-                                    {[effectiveTotal, Math.ceil(effectiveTotal / 100) * 100, Math.ceil(effectiveTotal / 500) * 500, Math.ceil(effectiveTotal / 1000) * 1000].filter((v, i, a) => a.indexOf(v) === i).slice(0, 4).map((amount) => (
+                                    {[total, Math.ceil(total / 100) * 100, Math.ceil(total / 500) * 500, Math.ceil(total / 1000) * 1000].filter((v, i, a) => a.indexOf(v) === i).slice(0, 4).map((amount) => (
                                         <button
                                             key={amount}
                                             onClick={() => setCashGiven(amount.toString())}
@@ -687,7 +524,7 @@ const Sales = () => {
                                 </div>
 
                                 {/* Change Display */}
-                                {parseFloat(cashGiven || 0) >= effectiveTotal && (
+                                {parseFloat(cashGiven || 0) >= total && (
                                     <div className="mt-4 p-4 bg-green-50 rounded-xl">
                                         <div className="flex justify-between items-center">
                                             <span className="text-green-700 font-medium">Change to Return</span>
@@ -699,10 +536,10 @@ const Sales = () => {
                                 )}
 
                                 {/* Insufficient cash warning */}
-                                {cashGiven && parseFloat(cashGiven) < effectiveTotal && (
+                                {cashGiven && parseFloat(cashGiven) < total && (
                                     <div className="mt-2 p-3 bg-red-50 rounded-lg">
                                         <p className="text-red-600 text-sm">
-                                            Insufficient amount. Need {formatCurrency(effectiveTotal - parseFloat(cashGiven))} more.
+                                            Insufficient amount. Need {formatCurrency(total - parseFloat(cashGiven))} more.
                                         </p>
                                     </div>
                                 )}
@@ -712,7 +549,7 @@ const Sales = () => {
                         {/* Confirm Button */}
                         <button
                             onClick={handleCheckout}
-                            disabled={processing || (paymentMethod === 'cash' && parseFloat(cashGiven || 0) < effectiveTotal)}
+                            disabled={processing || (paymentMethod === 'cash' && parseFloat(cashGiven || 0) < total)}
                             className="w-full py-4 bg-green-500 text-white font-semibold rounded-xl hover:bg-green-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                         >
                             {processing ? (
@@ -727,189 +564,6 @@ const Sales = () => {
                                 </>
                             )}
                         </button>
-                    </div>
-                </div>
-            )}
-
-            {/* Hold Bill Modal */}
-            {showHoldModal && (
-                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-                    <div className="bg-white rounded-2xl p-6 w-full max-w-md animate-fadeIn">
-                        <div className="flex items-center justify-between mb-6">
-                            <h3 className="text-xl font-bold text-slate-800">Hold Bill</h3>
-                            <button
-                                onClick={() => setShowHoldModal(false)}
-                                className="p-2 hover:bg-slate-100 rounded-lg"
-                            >
-                                <FiX size={20} />
-                            </button>
-                        </div>
-
-                        <div className="space-y-4">
-                            <div>
-                                <label className="text-sm font-medium text-slate-600 mb-1 block">
-                                    Customer Name
-                                </label>
-                                <div className="relative">
-                                    <FiUser className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                                    <input
-                                        type="text"
-                                        value={holdCustomerName}
-                                        onChange={(e) => setHoldCustomerName(e.target.value)}
-                                        placeholder="Enter customer name..."
-                                        className="w-full pl-10 pr-4 py-3 border border-slate-200 rounded-xl focus:ring-2 focus:ring-primary-500"
-                                    />
-                                </div>
-                            </div>
-
-                            <div>
-                                <label className="text-sm font-medium text-slate-600 mb-1 block">
-                                    Customer Phone
-                                </label>
-                                <div className="relative">
-                                    <FiPhone className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                                    <input
-                                        type="tel"
-                                        value={holdCustomerPhone}
-                                        onChange={(e) => setHoldCustomerPhone(e.target.value)}
-                                        placeholder="Enter phone number..."
-                                        className="w-full pl-10 pr-4 py-3 border border-slate-200 rounded-xl focus:ring-2 focus:ring-primary-500"
-                                    />
-                                </div>
-                            </div>
-
-                            <div>
-                                <label className="text-sm font-medium text-slate-600 mb-1 block">
-                                    Amount Paid (Partial Payment)
-                                </label>
-                                <div className="relative">
-                                    <FiDollarSign className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                                    <input
-                                        type="number"
-                                        value={holdAmountPaid}
-                                        onChange={(e) => setHoldAmountPaid(e.target.value)}
-                                        placeholder="0"
-                                        className="w-full pl-10 pr-4 py-3 border border-slate-200 rounded-xl focus:ring-2 focus:ring-primary-500"
-                                    />
-                                </div>
-                            </div>
-
-                            <div className="p-4 bg-slate-50 rounded-xl">
-                                <div className="flex justify-between text-sm mb-2">
-                                    <span className="text-slate-500">Bill Total</span>
-                                    <span className="font-medium">{formatCurrency(total)}</span>
-                                </div>
-                                {parseFloat(holdAmountPaid) > 0 && (
-                                    <div className="flex justify-between text-sm">
-                                        <span className="text-slate-500">Remaining</span>
-                                        <span className="font-medium text-amber-600">
-                                            {formatCurrency(total - parseFloat(holdAmountPaid || 0))}
-                                        </span>
-                                    </div>
-                                )}
-                            </div>
-                        </div>
-
-                        <button
-                            onClick={handleHoldBill}
-                            disabled={holdingBill}
-                            className="w-full mt-6 py-4 bg-amber-500 text-white font-semibold rounded-xl hover:bg-amber-600 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
-                        >
-                            {holdingBill ? (
-                                <>
-                                    <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                                    Saving...
-                                </>
-                            ) : (
-                                <>
-                                    <FiPause size={20} />
-                                    Save as Pending
-                                </>
-                            )}
-                        </button>
-                    </div>
-                </div>
-            )}
-
-            {/* Pending Bills Modal */}
-            {showPendingModal && (
-                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-                    <div className="bg-white rounded-2xl p-6 w-full max-w-2xl max-h-[80vh] flex flex-col animate-fadeIn">
-                        <div className="flex items-center justify-between mb-6">
-                            <h3 className="text-xl font-bold text-slate-800">Pending Bills</h3>
-                            <button
-                                onClick={() => setShowPendingModal(false)}
-                                className="p-2 hover:bg-slate-100 rounded-lg"
-                            >
-                                <FiX size={20} />
-                            </button>
-                        </div>
-
-                        <div className="flex-1 overflow-auto">
-                            {loadingPending ? (
-                                <div className="flex items-center justify-center h-32">
-                                    <div className="w-8 h-8 border-2 border-primary-500 border-t-transparent rounded-full animate-spin" />
-                                </div>
-                            ) : pendingBills.length === 0 ? (
-                                <div className="flex flex-col items-center justify-center h-32 text-slate-400">
-                                    <FiList size={32} />
-                                    <p className="mt-2">No pending bills</p>
-                                </div>
-                            ) : (
-                                <div className="space-y-3">
-                                    {pendingBills.map((bill) => (
-                                        <div
-                                            key={bill._id}
-                                            className="p-4 bg-slate-50 rounded-xl border border-slate-200"
-                                        >
-                                            <div className="flex items-start justify-between mb-2">
-                                                <div>
-                                                    <h4 className="font-medium text-slate-800">
-                                                        {bill.customerName || 'Walk-in Customer'}
-                                                    </h4>
-                                                    {bill.customerPhone && (
-                                                        <p className="text-sm text-slate-500">{bill.customerPhone}</p>
-                                                    )}
-                                                </div>
-                                                <p className="text-lg font-bold text-slate-800">
-                                                    {formatCurrency(bill.total)}
-                                                </p>
-                                            </div>
-
-                                            <div className="flex items-center gap-4 text-sm text-slate-500 mb-3">
-                                                <span>{bill.items?.length || 0} items</span>
-                                                {bill.amountPaid > 0 && (
-                                                    <>
-                                                        <span>Paid: {formatCurrency(bill.amountPaid)}</span>
-                                                        <span className="text-amber-600 font-medium">
-                                                            Due: {formatCurrency(bill.remainingAmount || bill.total - bill.amountPaid)}
-                                                        </span>
-                                                    </>
-                                                )}
-                                                <span>
-                                                    {new Date(bill.createdAt).toLocaleDateString()}
-                                                </span>
-                                            </div>
-
-                                            <div className="flex gap-2">
-                                                <button
-                                                    onClick={() => loadPendingBill(bill)}
-                                                    className="flex-1 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 font-medium"
-                                                >
-                                                    Load Bill
-                                                </button>
-                                                <button
-                                                    onClick={() => handleDeletePendingBill(bill._id)}
-                                                    className="px-4 py-2 bg-red-100 text-red-600 rounded-lg hover:bg-red-200"
-                                                >
-                                                    <FiTrash2 size={18} />
-                                                </button>
-                                            </div>
-                                        </div>
-                                    ))}
-                                </div>
-                            )}
-                        </div>
                     </div>
                 </div>
             )}

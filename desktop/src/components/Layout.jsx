@@ -3,11 +3,9 @@ import { NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useBusiness } from '../context/BusinessContext';
 import { useTheme } from '../context/ThemeContext';
-import { getPendingBills } from '../services/api/pendingBills';
 import {
     FiHome,
     FiPackage,
-    FiClock,
     FiRotateCcw,
     FiBarChart2,
     FiUser,
@@ -30,26 +28,7 @@ const Layout = ({ children }) => {
     const { business, config } = useBusiness();
     const { isDark, toggleTheme } = useTheme();
     const navigate = useNavigate();
-    const [pendingCount, setPendingCount] = useState(0);
     const [sidebarExpanded, setSidebarExpanded] = useState(false);
-
-    // Fetch pending bills count
-    useEffect(() => {
-        const fetchPendingCount = async () => {
-            try {
-                const res = await getPendingBills();
-                const activeBills = (res.data || []).filter(b => b.status === 'pending');
-                setPendingCount(activeBills.length);
-            } catch (error) {
-                console.error('Error fetching pending count:', error);
-            }
-        };
-        if (isEmployee) {
-            fetchPendingCount();
-            const interval = setInterval(fetchPendingCount, 30000);
-            return () => clearInterval(interval);
-        }
-    }, [isEmployee]);
 
     const handleLogout = async () => {
         await logout();
@@ -60,7 +39,6 @@ const Layout = ({ children }) => {
     const employeeMainNav = [
         { path: '/dashboard', icon: FiHome, label: 'Dashboard' },
         { path: '/products', icon: FiPackage, label: 'Products' },
-        { path: '/pending', icon: FiClock, label: 'Pending', badge: pendingCount },
         { path: '/returns', icon: FiRotateCcw, label: 'Returns' },
     ];
 
@@ -416,7 +394,7 @@ const Layout = ({ children }) => {
             )}
 
             {/* Main content */}
-            <main className={`flex-1 overflow-hidden print:overflow-visible relative z-5 ${isMac ? 'pt-8' : ''}`}>
+            <main className={`flex-1 overflow-y-auto print:overflow-visible relative z-5 ${isMac ? 'pt-8' : ''}`}>
                 {children}
             </main>
         </div>

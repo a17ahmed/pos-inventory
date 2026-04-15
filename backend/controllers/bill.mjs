@@ -1736,7 +1736,25 @@ export const getBillStats = async (req, res) => {
         };
         const prev = facetResult.prevPeriod[0] || { grossRevenue: 0 };
 
-        const netRevenue = period.grossRevenue - period.totalRefunded;
+        // Parse refund breakdowns early so we can use the correct period total
+        const _parseRefunds = (arr) => {
+            const out = { cashRefund: 0, cardRefund: 0, ledgerAdjust: 0, storeCreditRefund: 0, total: 0 };
+            for (const r of arr || []) {
+                if (r._id === "cash") out.cashRefund = r.amount;
+                else if (r._id === "card") out.cardRefund = r.amount;
+                else if (r._id === "ledger_adjust") out.ledgerAdjust = r.amount;
+                else if (r._id === "store_credit") out.storeCreditRefund = r.amount;
+                out.total += r.amount;
+            }
+            return out;
+        };
+        const periodRefunds = _parseRefunds(facetResult.periodRefundBreakdown);
+        const todayRefunds = _parseRefunds(facetResult.todayRefundBreakdown);
+
+        // Use refund breakdown total (filters by returns.returnedAt) instead of
+        // period.totalRefunded (which only counts bills created in the period)
+        const periodTotalRefunded = periodRefunds.total;
+        const netRevenue = period.grossRevenue - periodTotalRefunded;
         const avgOrderValue = period.totalOrders > 0 ? period.grossRevenue / period.totalOrders : 0;
         const profitMargin = netRevenue > 0 ? (period.netProfit / netRevenue) * 100 : 0;
         const growth =
@@ -1750,13 +1768,15 @@ export const getBillStats = async (req, res) => {
             todayData = {
                 sales: period.grossRevenue,
                 orders: period.totalOrders,
-                refunded: period.totalRefunded,
+                refunded: todayRefunds.total,
                 profit: period.netProfit,
                 collected: period.totalCollected,
                 credit: period.totalCredit,
             };
         } else {
-            todayData = facetResult.todaySales?.[0] || { sales: 0, orders: 0, refunded: 0, profit: 0, collected: 0, credit: 0 };
+            const td = facetResult.todaySales?.[0] || { sales: 0, orders: 0, refunded: 0, profit: 0, collected: 0, credit: 0 };
+            td.refunded = todayRefunds.total;
+            todayData = td;
         }
 
         // Month stats
@@ -1765,7 +1785,7 @@ export const getBillStats = async (req, res) => {
             monthData = {
                 sales: period.grossRevenue,
                 orders: period.totalOrders,
-                refunded: period.totalRefunded,
+                refunded: periodTotalRefunded,
                 profit: period.netProfit,
                 collected: period.totalCollected,
                 credit: period.totalCredit,
@@ -1774,21 +1794,7 @@ export const getBillStats = async (req, res) => {
             monthData = facetResult.monthSales?.[0] || { sales: 0, orders: 0, refunded: 0, profit: 0, collected: 0, credit: 0 };
         }
 
-        // ── Refund breakdown helper ───────────────────────────────
-        const parseRefundBreakdown = (arr) => {
-            const out = { cashRefund: 0, cardRefund: 0, ledgerAdjust: 0, storeCreditRefund: 0, total: 0 };
-            for (const r of arr || []) {
-                if (r._id === "cash") out.cashRefund = r.amount;
-                else if (r._id === "card") out.cardRefund = r.amount;
-                else if (r._id === "ledger_adjust") out.ledgerAdjust = r.amount;
-                else if (r._id === "store_credit") out.storeCreditRefund = r.amount;
-                out.total += r.amount;
-            }
-            return out;
-        };
-
-        const todayRefunds = parseRefundBreakdown(facetResult.todayRefundBreakdown);
-        const periodRefunds = parseRefundBreakdown(facetResult.periodRefundBreakdown);
+        // Refund breakdowns already parsed above (before netRevenue calculation)
 
         const response = {
             // Core (filtered period)
@@ -1804,7 +1810,7 @@ export const getBillStats = async (req, res) => {
             totalBillDiscount: period.totalBillDiscount,
 
             // Returns & refunds
-            totalRefunded: period.totalRefunded,
+            totalRefunded: periodTotalRefunded,
             refundBreakdown: periodRefunds,
 
             // P&L
