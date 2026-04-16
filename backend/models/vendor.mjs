@@ -54,6 +54,9 @@ const vendorSchema = new Schema(
             default: 0
         },
 
+        // Opening balance (for businesses migrating from another system)
+        openingBalance: { type: Number, default: 0 },
+
         notes: {
             type: String,
             default: ''

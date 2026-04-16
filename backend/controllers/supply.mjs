@@ -227,7 +227,7 @@ const createSupply = async (req, res) => {
 const getAllSupplies = async (req, res) => {
     try {
         const { vendor, paymentStatus, startDate, endDate, page = 1, limit = 50 } = req.query;
-        const filter = { business: req.user.businessId };
+        const filter = { business: req.user.businessId, type: { $ne: 'opening_balance' } };
 
         if (vendor) filter.vendor = vendor;
         if (paymentStatus) filter.paymentStatus = paymentStatus;
@@ -614,7 +614,7 @@ const getSupplyStats = async (req, res) => {
         const [overall, thisMonth, thisWeek, byVendor, byStatus] = await Promise.all([
             // Overall totals
             Supply.aggregate([
-                { $match: { business: businessId } },
+                { $match: { business: businessId, type: { $ne: 'opening_balance' } } },
                 {
                     $group: {
                         _id: null,
@@ -627,7 +627,7 @@ const getSupplyStats = async (req, res) => {
             ]),
             // This month
             Supply.aggregate([
-                { $match: { business: businessId, billDate: { $gte: startOfMonth } } },
+                { $match: { business: businessId, type: { $ne: 'opening_balance' }, billDate: { $gte: startOfMonth } } },
                 {
                     $group: {
                         _id: null,
@@ -640,7 +640,7 @@ const getSupplyStats = async (req, res) => {
             ]),
             // This week
             Supply.aggregate([
-                { $match: { business: businessId, billDate: { $gte: startOfWeek } } },
+                { $match: { business: businessId, type: { $ne: 'opening_balance' }, billDate: { $gte: startOfWeek } } },
                 {
                     $group: {
                         _id: null,
@@ -651,7 +651,7 @@ const getSupplyStats = async (req, res) => {
             ]),
             // By vendor (top 10)
             Supply.aggregate([
-                { $match: { business: businessId } },
+                { $match: { business: businessId, type: { $ne: 'opening_balance' } } },
                 {
                     $group: {
                         _id: '$vendor',
@@ -667,7 +667,7 @@ const getSupplyStats = async (req, res) => {
             ]),
             // By payment status
             Supply.aggregate([
-                { $match: { business: businessId } },
+                { $match: { business: businessId, type: { $ne: 'opening_balance' } } },
                 {
                     $group: {
                         _id: '$paymentStatus',

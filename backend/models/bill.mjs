@@ -82,7 +82,7 @@ const billSchema = new Schema(
         },
         type: {
             type: String,
-            enum: ["sale", "refund"],
+            enum: ["sale", "refund", "opening_balance"],
             default: "sale"
         },
 
@@ -226,6 +226,33 @@ billSchema.pre("save", function (next) {
         this.netAmount = this.total;
         this.amountPaid = this.payments.reduce((sum, p) => sum + p.amount, 0);
         this.amountDue = 0;
+        return next();
+    }
+
+    // ── Opening balance bills — simple: total = amount, no items/profit
+    if (this.type === "opening_balance") {
+        this.subtotal = this.total;
+        this.totalTax = 0;
+        this.totalQty = 0;
+        this.totalDiscount = 0;
+        this.totalItemDiscount = 0;
+        this.billDiscountAmount = 0;
+        this.totalCost = 0;
+        this.billProfit = 0;
+        this.returnedProfit = 0;
+        this.netProfit = 0;
+        this.totalRefunded = 0;
+        this.netAmount = this.total;
+        this.amountPaid = this.payments.reduce((sum, p) => sum + p.amount, 0);
+        this.amountDue = this.total - this.amountPaid;
+        if (this.amountPaid <= 0) {
+            this.paymentStatus = "unpaid";
+        } else if (this.amountPaid < this.total) {
+            this.paymentStatus = "partial";
+        } else {
+            this.paymentStatus = "paid";
+            this.amountDue = 0;
+        }
         return next();
     }
 

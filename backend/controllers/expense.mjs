@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 import Expense from '../models/expense.mjs';
 import Counter from '../models/counter.mjs';
+import { recordCashEntry } from './cashbook.mjs';
 
 // Category labels for display
 const CATEGORY_LABELS = {
@@ -228,6 +229,23 @@ const approveExpense = async (req, res) => {
         expense.rejectionReason = '';
 
         const updatedExpense = await expense.save();
+
+        // Record in cashbook for cash expenses
+        if (expense.paymentMethod === 'cash') {
+            await recordCashEntry({
+                type: 'expense',
+                amount: expense.amount,
+                direction: 'out',
+                referenceType: 'expense',
+                referenceId: expense._id,
+                referenceNumber: `Expense #${expense.expenseNumber || expense._id}`,
+                description: `Expense: ${expense.category}${expense.description ? ' - ' + expense.description : ''}`,
+                note: expense.description || '',
+                performedBy: req.user.name || 'Admin',
+                performedById: req.user.id || req.user.adminId,
+                businessId: req.user.businessId,
+            });
+        }
 
         res.json({
             message: 'Expense approved',

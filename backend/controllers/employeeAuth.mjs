@@ -68,19 +68,7 @@ export const employeeLogin = async (req, res) => {
                 employeeId: employee.employeeId,
                 role: employee.role
             },
-            business: {
-                _id: employee.business._id,
-                name: employee.business.name,
-                phone: employee.business.phone,
-                address: employee.business.address,
-                currency: employee.business.currency,
-                taxRate: employee.business.taxRate,
-                cashTaxRate: employee.business.cashTaxRate || 0,
-                cardTaxRate: employee.business.cardTaxRate || 0,
-                taxLabel: employee.business.taxLabel,
-                businessType: employee.business.businessType,
-                settings: employee.business.settings
-            }
+            business: employee.business
         });
     } catch (error) {
         console.error('Employee login error:', error);

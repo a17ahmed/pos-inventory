@@ -530,41 +530,28 @@ const Settings = () => {
                         </div>
                         <div className="p-6 space-y-4">
                             <div>
-                                <label className="block text-sm font-medium text-slate-700 dark:text-d-text mb-1">Receipt Header</label>
+                                <label className="block text-sm font-medium text-slate-700 dark:text-d-text mb-1">Thank You Message</label>
                                 <input
                                     type="text"
-                                    defaultValue={business?.name}
-                                    placeholder="Business name on receipt"
+                                    maxLength={60}
+                                    defaultValue={business?.receiptFooter || 'Thank you for your business!'}
+                                    onChange={(e) => bizFormRef.current.receiptFooter = e.target.value}
+                                    placeholder="e.g. Thank you for shopping with us!"
                                     className="w-full px-4 py-3 border border-slate-200 dark:border-d-border rounded-xl focus:ring-2 focus:ring-primary-500 bg-white dark:bg-d-elevated text-slate-800 dark:text-d-heading"
                                 />
+                                <p className="text-xs text-slate-400 dark:text-d-muted mt-1">Max 60 characters</p>
                             </div>
                             <div>
-                                <label className="block text-sm font-medium text-slate-700 dark:text-d-text mb-1">Footer Message</label>
-                                <input
-                                    type="text"
-                                    defaultValue="Thank you for your purchase!"
-                                    className="w-full px-4 py-3 border border-slate-200 dark:border-d-border rounded-xl focus:ring-2 focus:ring-primary-500 bg-white dark:bg-d-elevated text-slate-800 dark:text-d-heading"
+                                <label className="block text-sm font-medium text-slate-700 dark:text-d-text mb-1">Receipt Note</label>
+                                <textarea
+                                    maxLength={60}
+                                    defaultValue={business?.receiptNote || ''}
+                                    onChange={(e) => bizFormRef.current.receiptNote = e.target.value}
+                                    placeholder="e.g. Frozen items are not refundable. Exchange within 7 days only."
+                                    rows={3}
+                                    className="w-full px-4 py-3 border border-slate-200 dark:border-d-border rounded-xl focus:ring-2 focus:ring-primary-500 bg-white dark:bg-d-elevated text-slate-800 dark:text-d-heading resize-none"
                                 />
-                            </div>
-                            <div className="flex items-center justify-between py-3">
-                                <div>
-                                    <p className="font-medium text-slate-800 dark:text-d-heading">Show Business Logo</p>
-                                    <p className="text-sm text-slate-500 dark:text-d-muted">Display logo on printed receipts</p>
-                                </div>
-                                <label className="relative inline-flex items-center cursor-pointer">
-                                    <input type="checkbox" className="sr-only peer" defaultChecked />
-                                    <div className="w-11 h-6 bg-slate-200 dark:bg-slate-600 peer-focus:ring-2 peer-focus:ring-primary-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary-500"></div>
-                                </label>
-                            </div>
-                            <div className="flex items-center justify-between py-3">
-                                <div>
-                                    <p className="font-medium text-slate-800 dark:text-d-heading">Auto Print</p>
-                                    <p className="text-sm text-slate-500 dark:text-d-muted">Automatically print after checkout</p>
-                                </div>
-                                <label className="relative inline-flex items-center cursor-pointer">
-                                    <input type="checkbox" className="sr-only peer" />
-                                    <div className="w-11 h-6 bg-slate-200 dark:bg-slate-600 peer-focus:ring-2 peer-focus:ring-primary-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary-500"></div>
-                                </label>
+                                <p className="text-xs text-slate-400 dark:text-d-muted mt-1">Max 60 characters (leave empty to hide)</p>
                             </div>
                             <div className="flex gap-3 pt-4">
                                 <button
@@ -573,9 +560,13 @@ const Settings = () => {
                                 >
                                     Cancel
                                 </button>
-                                <button className="flex-1 py-3 bg-primary-500 text-white rounded-xl font-medium hover:bg-primary-600 flex items-center justify-center gap-2">
+                                <button
+                                    onClick={handleSaveBusiness}
+                                    disabled={savingBusiness}
+                                    className="flex-1 py-3 bg-primary-500 text-white rounded-xl font-medium hover:bg-primary-600 flex items-center justify-center gap-2 disabled:opacity-50"
+                                >
                                     <FiSave size={18} />
-                                    Save
+                                    {savingBusiness ? 'Saving...' : 'Save'}
                                 </button>
                             </div>
                         </div>

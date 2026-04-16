@@ -37,6 +37,7 @@ const defaultCustomerForm = () => ({
     notes: '',
     creditDays: 0,
     creditLimit: 0,
+    openingBalance: 0,
 });
 
 // ---------------------------------------------------------------------------
@@ -168,6 +169,9 @@ const Customers = () => {
                 payload.creditLimit = Number(form.creditLimit) || 0;
                 await updateCustomer(editingCustomer._id, payload);
             } else {
+                if (Number(form.openingBalance) > 0) {
+                    payload.openingBalance = Number(form.openingBalance);
+                }
                 await createCustomer(payload);
             }
 
@@ -527,6 +531,26 @@ const Customers = () => {
                                     />
                                 </div>
                             </div>
+
+                            {/* Opening Balance — only when adding new customer */}
+                            {!editingCustomer && (
+                                <div>
+                                    <label className="block text-sm font-medium text-slate-700 dark:text-d-text mb-1.5">
+                                        Opening Balance
+                                    </label>
+                                    <input
+                                        type="number"
+                                        min="0"
+                                        value={form.openingBalance}
+                                        onChange={(e) =>
+                                            setForm({ ...form, openingBalance: e.target.value })
+                                        }
+                                        placeholder="0"
+                                        className="w-full px-4 py-2.5 bg-slate-50 dark:bg-d-bg border border-slate-200 dark:border-d-border rounded-xl focus:ring-2 focus:ring-primary-500 dark:focus:border-d-border-hover focus:outline-none text-slate-800 dark:text-d-text"
+                                    />
+                                    <p className="text-xs text-slate-400 dark:text-d-faint mt-1">Previous balance from old system (if any)</p>
+                                </div>
+                            )}
 
                             {/* Credit Terms — edit mode only */}
                             {editingCustomer && (

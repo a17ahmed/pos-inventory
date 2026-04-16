@@ -1,12 +1,13 @@
 import Customer from '../models/customer.mjs';
 import Bill from '../models/bill.mjs';
+import Counter from '../models/counter.mjs';
 import mongoose from 'mongoose';
 import { recordCashEntry } from './cashbook.mjs';
 
 // Create or get customer (upsert by phone + business)
 export const createOrGetCustomer = async (req, res) => {
     try {
-        const { name, phone, email, address, notes } = req.body;
+        const { name, phone, email, address, notes, openingBalance } = req.body;
 
         if (!name || !phone) {
             return res.status(400).json({ message: 'Name and phone are required' });
@@ -22,18 +23,63 @@ export const createOrGetCustomer = async (req, res) => {
             });
         }
 
-        const customer = await Customer.findOneAndUpdate(
-            { phone: phone.trim(), business: req.user.businessId },
-            {
-                name: name.trim(),
-                ...(email !== undefined && { email }),
-                ...(address !== undefined && { address }),
-                ...(notes !== undefined && { notes })
-            },
-            { new: true, upsert: true, setDefaultsOnInsert: true }
-        );
+        const updateFields = {
+            name: name.trim(),
+            ...(email !== undefined && { email }),
+            ...(address !== undefined && { address }),
+            ...(notes !== undefined && { notes }),
+        };
 
-        res.status(200).json(customer);
+        const obAmount = !existing && openingBalance !== undefined ? Number(openingBalance) : 0;
+
+        if (obAmount > 0) {
+            // Use transaction so customer + OB bill are atomic
+            const session = await mongoose.startSession();
+            try {
+                session.startTransaction();
+
+                const customer = await Customer.findOneAndUpdate(
+                    { phone: phone.trim(), business: req.user.businessId },
+                    { ...updateFields, openingBalance: obAmount },
+                    { new: true, upsert: true, setDefaultsOnInsert: true, session }
+                );
+
+                const billNumber = await Counter.getNextSequence('billNumber', req.user.businessId, session);
+                const now = new Date();
+                const ob = new Bill({
+                    billNumber,
+                    business: req.user.businessId,
+                    type: 'opening_balance',
+                    status: 'completed',
+                    paymentStatus: 'unpaid',
+                    items: [],
+                    total: obAmount,
+                    customer: customer._id,
+                    customerName: customer.name,
+                    customerPhone: customer.phone,
+                    cashierName: 'System',
+                    notes: 'Opening balance from previous system',
+                    date: now.toLocaleDateString('en-US'),
+                    time: now.toLocaleTimeString('en-US'),
+                });
+                await ob.save({ session });
+
+                await session.commitTransaction();
+                res.status(200).json(customer);
+            } catch (txError) {
+                await session.abortTransaction();
+                throw txError;
+            } finally {
+                session.endSession();
+            }
+        } else {
+            const customer = await Customer.findOneAndUpdate(
+                { phone: phone.trim(), business: req.user.businessId },
+                updateFields,
+                { new: true, upsert: true, setDefaultsOnInsert: true }
+            );
+            res.status(200).json(customer);
+        }
     } catch (error) {
         console.error('Error creating/getting customer:', error);
         res.status(500).json({ message: 'Failed to save customer' });
@@ -101,6 +147,7 @@ export const getCustomer = async (req, res) => {
         const recentBills = await Bill.find({
             customer: customer._id,
             business: req.user.businessId,
+            type: { $ne: 'opening_balance' },
             status: { $ne: 'cancelled' }
         }).sort({ createdAt: -1 }).limit(20).lean();
 
@@ -212,10 +259,11 @@ export const getCustomerLedger = async (req, res) => {
 
         for (const bill of bills) {
             // Bill entry (debit — customer owes us)
+            const isOpeningBalance = bill.type === 'opening_balance';
             ledger.push({
-                type: 'bill',
+                type: isOpeningBalance ? 'opening_balance' : 'bill',
                 date: bill.createdAt,
-                description: `Bill #${bill.billNumber}`,
+                description: isOpeningBalance ? 'Opening Balance' : `Bill #${bill.billNumber}`,
                 billId: bill._id,
                 billNumber: bill.billNumber,
                 items: bill.items,
@@ -277,7 +325,7 @@ export const getCustomerLedger = async (req, res) => {
         // Rationale: an initial payment recorded with a bill can have a paidAt slightly
         // before the bill's createdAt, which would incorrectly show the credit before
         // the debit. A bill (liability) must always come before its settlement.
-        const typeOrder = { bill: 0, payment: 1, return: 2 };
+        const typeOrder = { opening_balance: -1, bill: 0, payment: 1, return: 2 };
         ledger.sort((a, b) => {
             const dateDiff = new Date(a.date) - new Date(b.date);
             if (Math.abs(dateDiff) > 1000) return dateDiff; // >1s apart → respect real order

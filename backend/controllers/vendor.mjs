@@ -1,16 +1,19 @@
 import Vendor from '../models/vendor.mjs';
 import Supply from '../models/supply.mjs';
+import Counter from '../models/counter.mjs';
 import mongoose from 'mongoose';
 import { recordCashEntry } from './cashbook.mjs';
 
 // Create vendor
 const createVendor = async (req, res) => {
     try {
-        const { name, phone, company, address, bankAccount, creditDays, creditLimit, notes } = req.body;
+        const { name, phone, company, address, bankAccount, creditDays, creditLimit, notes, openingBalance } = req.body;
 
         if (!name || !name.trim()) {
             return res.status(400).json({ message: 'Vendor name is required' });
         }
+
+        const obAmount = Number(openingBalance) || 0;
 
         const vendor = new Vendor({
             name: name.trim(),
@@ -21,10 +24,46 @@ const createVendor = async (req, res) => {
             creditDays: creditDays || 0,
             creditLimit: creditLimit || 0,
             notes: notes || '',
+            openingBalance: obAmount,
             business: req.user.businessId
         });
 
-        await vendor.save();
+        if (obAmount > 0) {
+            // Use transaction so vendor + OB supply are atomic
+            const session = await mongoose.startSession();
+            try {
+                session.startTransaction();
+
+                await vendor.save({ session });
+
+                const supplyNumber = await Counter.getNextSequence('supplyNumber', req.user.businessId, session);
+                const ob = new Supply({
+                    supplyNumber,
+                    type: 'opening_balance',
+                    vendor: vendor._id,
+                    vendorName: vendor.name,
+                    items: [],
+                    totalAmount: obAmount,
+                    remainingAmount: obAmount,
+                    paidAmount: 0,
+                    paymentStatus: 'unpaid',
+                    notes: 'Opening balance from previous system',
+                    createdBy: 'System',
+                    business: req.user.businessId,
+                });
+                await ob.save({ session });
+
+                await session.commitTransaction();
+            } catch (txError) {
+                await session.abortTransaction();
+                throw txError;
+            } finally {
+                session.endSession();
+            }
+        } else {
+            await vendor.save();
+        }
+
         res.status(201).json(vendor);
     } catch (error) {
         if (error.code === 11000) {
@@ -251,10 +290,11 @@ const getVendorLedger = async (req, res) => {
 
         for (const supply of supplies) {
             // Supply entry (debit - vendor gave us goods, we owe them)
+            const isOpeningBalance = supply.type === 'opening_balance';
             ledger.push({
-                type: 'supply',
+                type: isOpeningBalance ? 'opening_balance' : 'supply',
                 date: supply.billDate,
-                description: `Supply #${supply.supplyNumber}${supply.billNumber ? ` (Bill: ${supply.billNumber})` : ''}`,
+                description: isOpeningBalance ? 'Opening Balance' : `Supply #${supply.supplyNumber}${supply.billNumber ? ` (Bill: ${supply.billNumber})` : ''}`,
                 supplyId: supply._id,
                 supplyNumber: supply.supplyNumber,
                 items: supply.items,

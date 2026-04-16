@@ -95,6 +95,8 @@ export const updateBusinessSchema = Joi.object({
     cashTaxRate: Joi.number().min(0).max(100),
     cardTaxRate: Joi.number().min(0).max(100),
     settings: Joi.object(),
+    receiptFooter: Joi.string().max(60).allow(""),
+    receiptNote: Joi.string().max(60).allow(""),
 });
 
 // ═══════════════════════════════════════════════════════════════
@@ -273,6 +275,7 @@ export const createCustomerSchema = Joi.object({
     email: Joi.string().email().allow(""),
     address: Joi.string().allow(""),
     notes: Joi.string().allow(""),
+    openingBalance: Joi.number().min(0),
 });
 
 export const updateCustomerSchema = Joi.object({
@@ -311,6 +314,7 @@ export const createVendorSchema = Joi.object({
     creditDays: Joi.number().min(0),
     creditLimit: Joi.number().min(0),
     notes: Joi.string().allow(""),
+    openingBalance: Joi.number().min(0),
 });
 
 export const updateVendorSchema = Joi.object({

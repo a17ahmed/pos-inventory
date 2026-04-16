@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { adminLogin as adminLoginApi, logout as logoutApi } from '../services/api/auth';
+import { getMyAccess } from '../services/api/access';
 
 const AuthContext = createContext(null);
 
@@ -16,10 +17,25 @@ export const AuthProvider = ({ children }) => {
     const [loading, setLoading] = useState(true);
     const [isAuthenticated, setIsAuthenticated] = useState(false);
     const [userType, setUserType] = useState(null); // 'admin' or 'employee'
+    const [permissions, setPermissions] = useState(null);
 
     useEffect(() => {
         checkAuth();
     }, []);
+
+    const fetchPermissions = async () => {
+        try {
+            const res = await getMyAccess();
+            if (res.data.isAdmin) {
+                setPermissions(null); // admins bypass all checks
+            } else {
+                setPermissions(res.data.permissions);
+                localStorage.setItem('permissions', JSON.stringify(res.data.permissions));
+            }
+        } catch (err) {
+            console.error('Failed to fetch permissions:', err);
+        }
+    };
 
     const checkAuth = () => {
         try {
@@ -36,11 +52,19 @@ export const AuthProvider = ({ children }) => {
                     const employeeData = JSON.parse(employeeStr);
                     setUser(employeeData);
                     setUserType('employee');
+                    // Load cached permissions immediately, then refresh from server
+                    const cachedPerms = localStorage.getItem('permissions');
+                    if (cachedPerms) {
+                        setPermissions(JSON.parse(cachedPerms));
+                    }
+                    // Refresh permissions from server in background
+                    setTimeout(() => fetchPermissions(), 500);
                 }
                 setIsAuthenticated(true);
             } else {
                 setUser(null);
                 setUserType(null);
+                setPermissions(null);
                 setIsAuthenticated(false);
             }
         } catch (error) {
@@ -86,8 +110,10 @@ export const AuthProvider = ({ children }) => {
             localStorage.removeItem('employee');
             localStorage.removeItem('counterUser');
             localStorage.removeItem('business');
+            localStorage.removeItem('permissions');
             setUser(null);
             setUserType(null);
+            setPermissions(null);
             setIsAuthenticated(false);
         }
     };
@@ -103,6 +129,8 @@ export const AuthProvider = ({ children }) => {
         userType,
         isAdmin,
         isEmployee,
+        permissions,
+        refreshPermissions: fetchPermissions,
         login,
         logout,
         checkAuth,

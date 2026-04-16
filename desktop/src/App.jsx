@@ -61,6 +61,7 @@ import CustomerLedger from './screens/CustomerLedger';
 import VendorLedger from './screens/VendorLedger';
 import CashBook from './screens/CashBook';
 import Inventory from './screens/Inventory';
+import EmployeeAnalytics from './screens/EmployeeAnalytics';
 
 // Layout
 import Layout from './components/Layout';
@@ -88,6 +89,18 @@ const ProtectedRoute = ({ children }) => {
         return <Navigate to="/login" state={{ from: location }} replace />;
     }
 
+    return children;
+};
+
+// Permission-based route guard for employees
+const PermissionRoute = ({ module, children }) => {
+    const { isAdmin, permissions } = useAuth();
+    if (isAdmin || !module) return children;
+    // If permissions not loaded yet, allow (will filter once loaded)
+    if (!permissions) return children;
+    if (!permissions[module]?.view) {
+        return <Navigate to="/dashboard" replace />;
+    }
     return children;
 };
 
@@ -155,9 +168,11 @@ function AppContent() {
                 path="/sales"
                 element={
                     <ProtectedRoute>
-                        <Layout>
-                            <Sales />
-                        </Layout>
+                        <PermissionRoute module="pos">
+                            <Layout>
+                                <Sales />
+                            </Layout>
+                        </PermissionRoute>
                     </ProtectedRoute>
                 }
             />
@@ -165,9 +180,11 @@ function AppContent() {
                 path="/products"
                 element={
                     <ProtectedRoute>
-                        <Layout>
-                            <Products />
-                        </Layout>
+                        <PermissionRoute module="products">
+                            <Layout>
+                                <Products />
+                            </Layout>
+                        </PermissionRoute>
                     </ProtectedRoute>
                 }
             />
@@ -175,9 +192,11 @@ function AppContent() {
                 path="/employees"
                 element={
                     <ProtectedRoute>
-                        <Layout>
-                            <Employees />
-                        </Layout>
+                        <PermissionRoute module="employees">
+                            <Layout>
+                                <Employees />
+                            </Layout>
+                        </PermissionRoute>
                     </ProtectedRoute>
                 }
             />
@@ -185,9 +204,11 @@ function AppContent() {
                 path="/receipts"
                 element={
                     <ProtectedRoute>
-                        <Layout>
-                            <Receipts />
-                        </Layout>
+                        <PermissionRoute module="pos">
+                            <Layout>
+                                <Receipts />
+                            </Layout>
+                        </PermissionRoute>
                     </ProtectedRoute>
                 }
             />
@@ -195,9 +216,11 @@ function AppContent() {
                 path="/expenses"
                 element={
                     <ProtectedRoute>
-                        <Layout>
-                            <Expenses />
-                        </Layout>
+                        <PermissionRoute module="expenses">
+                            <Layout>
+                                <Expenses />
+                            </Layout>
+                        </PermissionRoute>
                     </ProtectedRoute>
                 }
             />
@@ -205,9 +228,11 @@ function AppContent() {
                 path="/reports"
                 element={
                     <ProtectedRoute>
-                        <Layout>
-                            <Reports />
-                        </Layout>
+                        <PermissionRoute module="reports">
+                            <Layout>
+                                <Reports />
+                            </Layout>
+                        </PermissionRoute>
                     </ProtectedRoute>
                 }
             />
@@ -215,9 +240,11 @@ function AppContent() {
                 path="/settings"
                 element={
                     <ProtectedRoute>
-                        <Layout>
-                            <Settings />
-                        </Layout>
+                        <PermissionRoute module="settings">
+                            <Layout>
+                                <Settings />
+                            </Layout>
+                        </PermissionRoute>
                     </ProtectedRoute>
                 }
             />
@@ -235,9 +262,11 @@ function AppContent() {
                 path="/returns"
                 element={
                     <ProtectedRoute>
-                        <Layout>
-                            <Returns />
-                        </Layout>
+                        <PermissionRoute module="returns">
+                            <Layout>
+                                <Returns />
+                            </Layout>
+                        </PermissionRoute>
                     </ProtectedRoute>
                 }
             />
@@ -245,9 +274,11 @@ function AppContent() {
                 path="/vendors"
                 element={
                     <ProtectedRoute>
-                        <Layout>
-                            <Vendors />
-                        </Layout>
+                        <PermissionRoute module="vendors">
+                            <Layout>
+                                <Vendors />
+                            </Layout>
+                        </PermissionRoute>
                     </ProtectedRoute>
                 }
             />
@@ -255,9 +286,11 @@ function AppContent() {
                 path="/customers"
                 element={
                     <ProtectedRoute>
-                        <Layout>
-                            <Customers />
-                        </Layout>
+                        <PermissionRoute module="customers">
+                            <Layout>
+                                <Customers />
+                            </Layout>
+                        </PermissionRoute>
                     </ProtectedRoute>
                 }
             />
@@ -265,9 +298,11 @@ function AppContent() {
                 path="/inventory"
                 element={
                     <ProtectedRoute>
-                        <Layout>
-                            <Inventory />
-                        </Layout>
+                        <PermissionRoute module="products">
+                            <Layout>
+                                <Inventory />
+                            </Layout>
+                        </PermissionRoute>
                     </ProtectedRoute>
                 }
             />
@@ -275,9 +310,11 @@ function AppContent() {
                 path="/customers/:id/ledger"
                 element={
                     <ProtectedRoute>
-                        <Layout>
-                            <CustomerLedger />
-                        </Layout>
+                        <PermissionRoute module="customers">
+                            <Layout>
+                                <CustomerLedger />
+                            </Layout>
+                        </PermissionRoute>
                     </ProtectedRoute>
                 }
             />
@@ -285,9 +322,11 @@ function AppContent() {
                 path="/vendors/:id/ledger"
                 element={
                     <ProtectedRoute>
-                        <Layout>
-                            <VendorLedger />
-                        </Layout>
+                        <PermissionRoute module="vendors">
+                            <Layout>
+                                <VendorLedger />
+                            </Layout>
+                        </PermissionRoute>
                     </ProtectedRoute>
                 }
             />
@@ -295,9 +334,23 @@ function AppContent() {
                 path="/cashbook"
                 element={
                     <ProtectedRoute>
-                        <Layout>
-                            <CashBook />
-                        </Layout>
+                        <PermissionRoute module="cashbook">
+                            <Layout>
+                                <CashBook />
+                            </Layout>
+                        </PermissionRoute>
+                    </ProtectedRoute>
+                }
+            />
+            <Route
+                path="/analytics"
+                element={
+                    <ProtectedRoute>
+                        <PermissionRoute module="dashboard">
+                            <Layout>
+                                <EmployeeAnalytics />
+                            </Layout>
+                        </PermissionRoute>
                     </ProtectedRoute>
                 }
             />

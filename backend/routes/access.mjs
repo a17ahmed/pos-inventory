@@ -3,6 +3,7 @@ import { authorize } from '../middleware/rbac.mjs';
 import { validate } from '../middleware/validate.mjs';
 import { updateAccessSchema } from '../middleware/validationSchemas.mjs';
 import {
+    getMyAccess,
     getEmployeeAccess,
     updateEmployeeAccess,
     getAllAccess,
@@ -11,7 +12,10 @@ import {
 
 const accessRouter = express.Router();
 
-// All access routes require admin or manager role
+// Employee fetches own permissions (no role restriction)
+accessRouter.get('/me', getMyAccess);
+
+// Admin/manager routes
 accessRouter.get('/', authorize('admin', 'manager'), getAllAccess);
 accessRouter.get('/:employeeId', authorize('admin', 'manager'), getEmployeeAccess);
 accessRouter.put('/:employeeId', authorize('admin', 'manager'), validate(updateAccessSchema), updateEmployeeAccess);

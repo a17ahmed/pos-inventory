@@ -47,6 +47,7 @@ const defaultVendorForm = () => ({
     phone: '',
     company: '',
     notes: '',
+    openingBalance: 0,
 });
 
 const TABS = [
@@ -411,9 +412,12 @@ const Vendors = () => {
         setVendorSubmitting(true);
         try {
             if (editingVendor) {
-                await updateVendor(editingVendor._id, vendorForm);
+                const { openingBalance, ...updateData } = vendorForm;
+                await updateVendor(editingVendor._id, updateData);
             } else {
-                await createVendor(vendorForm);
+                const payload = { ...vendorForm };
+                payload.openingBalance = Number(payload.openingBalance) || 0;
+                await createVendor(payload);
             }
             closeVendorModal();
             fetchVendors();
@@ -1393,6 +1397,26 @@ const Vendors = () => {
                                     className="w-full px-4 py-2 bg-white dark:bg-d-bg border border-slate-200 dark:border-d-border rounded-xl focus:ring-2 focus:ring-primary-500 dark:focus:border-d-border-hover focus:outline-none text-slate-800 dark:text-d-text placeholder-slate-400 dark:placeholder-d-faint"
                                 />
                             </div>
+
+                            {/* Opening Balance — only when adding new vendor */}
+                            {!editingVendor && (
+                                <div>
+                                    <label className="block text-sm font-medium text-slate-700 dark:text-d-text mb-1">
+                                        Opening Balance
+                                    </label>
+                                    <input
+                                        type="number"
+                                        min="0"
+                                        value={vendorForm.openingBalance}
+                                        onChange={(e) =>
+                                            setVendorForm({ ...vendorForm, openingBalance: e.target.value })
+                                        }
+                                        placeholder="0"
+                                        className="w-full px-4 py-2 bg-white dark:bg-d-bg border border-slate-200 dark:border-d-border rounded-xl focus:ring-2 focus:ring-primary-500 dark:focus:border-d-border-hover focus:outline-none text-slate-800 dark:text-d-text placeholder-slate-400 dark:placeholder-d-faint"
+                                    />
+                                    <p className="text-xs text-slate-400 dark:text-d-faint mt-1">Previous balance from old system (if any)</p>
+                                </div>
+                            )}
 
                             <div>
                                 <label className="block text-sm font-medium text-slate-700 dark:text-d-text mb-1">

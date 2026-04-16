@@ -1,6 +1,40 @@
 import Access from '../models/access.mjs';
 import Employee from '../models/employee.mjs';
-import { invalidateAccessCache } from '../middleware/accessControl.mjs';
+import { invalidateAccessCache, getAccessForEmployee } from '../middleware/accessControl.mjs';
+
+/**
+ * GET /access/me
+ * Get the calling user's own permissions.
+ * Uses the same NodeCache as accessControl middleware for consistency.
+ * Works for both employees (returns their access doc) and admins (returns all-true).
+ */
+export const getMyAccess = async (req, res) => {
+    try {
+        // Admins get full permissions
+        if (req.user.adminId) {
+            return res.json({ permissions: null, isAdmin: true });
+        }
+
+        // Use the cached getter (same cache as accessControl middleware)
+        let permissions = await getAccessForEmployee(req.user.id, req.user.businessId);
+
+        if (!permissions) {
+            // No access doc exists — create one with schema defaults
+            const newAccess = await Access.create({
+                employee: req.user.id,
+                business: req.user.businessId
+            });
+            permissions = newAccess.toObject().permissions;
+            // Invalidate so cache picks up the new doc on next call
+            invalidateAccessCache(req.user.id, req.user.businessId);
+        }
+
+        res.json({ permissions });
+    } catch (error) {
+        console.error('Error fetching my access:', error);
+        res.status(500).json({ message: 'Failed to fetch permissions' });
+    }
+};
 
 /**
  * GET /access/:employeeId

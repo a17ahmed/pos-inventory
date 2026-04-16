@@ -113,7 +113,7 @@ const Login = () => {
                     alert('Password change required. Please change your password.');
                 }
 
-                // Update auth and business contexts, then navigate
+                // Update auth and business contexts (checkAuth will also fetch permissions)
                 checkAuth();
                 loadBusiness();
                 navigate('/dashboard', { replace: true });

@@ -131,7 +131,7 @@ const VendorLedger = () => {
                 });
             }
             const entry = supplyMap.get(key);
-            if (e.type === 'supply') entry.total += e.debit || 0;
+            if (e.type === 'supply' || e.type === 'opening_balance') entry.total += e.debit || 0;
             else entry.credited += e.credit || 0;
         }
         return Array.from(supplyMap.values())

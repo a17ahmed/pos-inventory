@@ -198,7 +198,8 @@ ipcMain.handle('print-receipt', async (event, { receiptData }) => {
             storeName, storeAddress, storePhone, cashierName,
             billNumber, date, customerName, customerBalance,
             items, subtotal, tax, itemDiscounts, billDiscount, total,
-            paymentMethod, amountPaid, cashGiven, change, currency
+            paymentMethod, amountPaid, cashGiven, change, currency,
+            receiptFooter, receiptNote
         } = receiptData;
 
         const W = 48;
@@ -330,9 +331,14 @@ ipcMain.handle('print-receipt', async (event, { receiptData }) => {
         printer.drawLine();
 
         // ──── FOOTER ────
+        if (receiptNote) {
+            printer.alignCenter();
+            printer.println(receiptNote);
+            printer.drawLine();
+        }
         printer.alignCenter();
         printer.bold(true);
-        printer.println('THANK YOU!');
+        printer.println(receiptFooter || 'THANK YOU!');
         printer.bold(false);
         printer.alignLeft();
         printer.drawLine();

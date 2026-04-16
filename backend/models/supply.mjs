@@ -6,6 +6,11 @@ const supplySchema = new Schema(
             type: Number,
             required: true
         },
+        type: {
+            type: String,
+            enum: ['purchase', 'opening_balance'],
+            default: 'purchase'
+        },
         vendor: {
             type: Schema.Types.ObjectId,
             ref: 'Vendor',

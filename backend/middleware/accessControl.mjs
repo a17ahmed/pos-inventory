@@ -7,7 +7,7 @@ const accessCache = new NodeCache({ stdTTL: 600, checkperiod: 120 });
 /**
  * Get access permissions for an employee, with caching.
  */
-const getAccessForEmployee = async (employeeId, businessId) => {
+export const getAccessForEmployee = async (employeeId, businessId) => {
     const cacheKey = `access:${employeeId}:${businessId}`;
 
     let permissions = accessCache.get(cacheKey);

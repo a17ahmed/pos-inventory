@@ -72,6 +72,10 @@ const businessSchema = new Schema(
             type: String,
             default: "Thank you for your business!"
         },
+        receiptNote: {
+            type: String,
+            default: ""
+        },
         settings: {
             language: { type: String, default: "en" },
             timezone: { type: String, default: "Asia/Karachi" },

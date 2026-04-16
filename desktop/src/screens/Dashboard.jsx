@@ -794,7 +794,8 @@ const EmployeeDashboard = () => {
             <div class="line"></div>
             <div class="center" style="font-size:9px;">Payment: ${billData.paymentMethod.toUpperCase()}</div>
             <div class="line"></div>
-            <div class="center" style="font-size:9px;margin-top:2px;">Thank you for your purchase!</div>
+            ${business?.receiptNote ? `<div class="center" style="font-size:8px;margin-top:2px;font-style:italic;">${business.receiptNote}</div><div class="line"></div>` : ''}
+            <div class="center" style="font-size:9px;margin-top:2px;">${business?.receiptFooter || 'Thank you for your purchase!'}</div>
         </body>
         </html>`;
 
@@ -822,6 +823,8 @@ const EmployeeDashboard = () => {
                     cashGiven: billData.cashGiven || 0,
                     change: billData.change || 0,
                     currency,
+                    receiptFooter: business?.receiptFooter || 'Thank you for your purchase!',
+                    receiptNote: business?.receiptNote || '',
                 },
             })
                 .then(result => {
@@ -1741,7 +1744,7 @@ const AdminDashboard = () => {
     const { business } = useBusiness();
     const [timeFilter, setTimeFilter] = useState('today');
     const [stats, setStats] = useState({ totalSales: 0, totalOrders: 0, avgOrderValue: 0, growth: 0 });
-    const [profitLoss, setProfitLoss] = useState({ grossRevenue: 0, returns: 0, netRevenue: 0, cogs: 0, grossProfit: 0, expenses: 0, netProfit: 0, profitMargin: 0 });
+    const [profitLoss, setProfitLoss] = useState({ grossRevenue: 0, returns: 0, netRevenue: 0, cogs: 0, grossProfit: 0, returnedProfit: 0, salesNetProfit: 0, expenses: 0, netProfit: 0, profitMargin: 0 });
     const [chartData, setChartData] = useState([]);
     const [peakData, setPeakData] = useState({ value: 0, time: '' });
     const [loading, setLoading] = useState(true);
@@ -1805,7 +1808,8 @@ const AdminDashboard = () => {
             const periodExpenses = allExpenses.filter(e => new Date(e.date || e.createdAt) >= startDate);
             const expenses = periodExpenses.reduce((sum, e) => sum + (e.amount || 0), 0);
 
-            const netProfit = backendStats.grossProfit - expenses;
+            const returnedProfit = (backendStats.grossProfit || 0) - (backendStats.netProfit || 0);
+            const netProfit = backendStats.netProfit - expenses;
             const profitMargin = backendStats.netRevenue > 0 ? (netProfit / backendStats.netRevenue) * 100 : 0;
 
             setStats({
@@ -1821,6 +1825,8 @@ const AdminDashboard = () => {
                 netRevenue: backendStats.netRevenue,
                 cogs: backendStats.totalCost || 0,
                 grossProfit: backendStats.grossProfit,
+                returnedProfit,
+                salesNetProfit: backendStats.netProfit,
                 expenses,
                 netProfit,
                 profitMargin
@@ -1952,14 +1958,14 @@ const AdminDashboard = () => {
             title: 'Net Profit Calculation',
             items: [
                 { label: 'Gross Revenue', value: profitLoss.grossRevenue, color: '#34e8a1', sign: '' },
-                { label: 'Returns/Refunds', value: profitLoss.returns, color: '#ff6b6b', sign: '\u2212' },
-                { label: 'Net Revenue', value: profitLoss.netRevenue, color: '#5b9cf6', sign: '=' },
                 { label: 'Cost of Goods', value: profitLoss.cogs, color: '#ff6b6b', sign: '\u2212' },
                 { label: 'Gross Profit', value: profitLoss.grossProfit, color: '#ffd264', sign: '=' },
+                { label: 'Returned Profit', value: profitLoss.returnedProfit, color: '#ff6b6b', sign: '\u2212' },
+                { label: 'Net Sales Profit', value: profitLoss.salesNetProfit, color: '#5b9cf6', sign: '=' },
                 { label: 'Expenses', value: profitLoss.expenses, color: '#ff6b6b', sign: '\u2212' },
                 { label: 'Net Profit', value: profitLoss.netProfit, color: profitLoss.netProfit >= 0 ? '#34e8a1' : '#ff6b6b', sign: '=', isBold: true },
             ],
-            formula: 'Revenue \u2212 Returns \u2212 COGS \u2212 Expenses = Net Profit'
+            formula: 'Gross Profit \u2212 Returned Profit \u2212 Expenses = Net Profit'
         },
         cogs: {
             title: 'Cost of Goods Sold',

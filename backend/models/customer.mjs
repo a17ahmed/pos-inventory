@@ -48,6 +48,9 @@ const customerSchema = new mongoose.Schema({
         required: true
     },
 
+    // Opening balance (for businesses migrating from another system)
+    openingBalance: { type: Number, default: 0 },
+
     // Ledger — quick balance lookup (updated when bills are created/paid)
     totalBilled: { type: Number, default: 0 },
     totalPaid: { type: Number, default: 0 },

@@ -24,7 +24,7 @@ import {
 } from 'react-icons/fi';
 
 const Layout = ({ children }) => {
-    const { user, logout, isAdmin, isEmployee } = useAuth();
+    const { user, logout, isAdmin, isEmployee, permissions } = useAuth();
     const { business, config } = useBusiness();
     const { isDark, toggleTheme } = useTheme();
     const navigate = useNavigate();
@@ -35,34 +35,48 @@ const Layout = ({ children }) => {
         navigate('/login');
     };
 
-    // Employee navigation - MAIN section
-    const employeeMainNav = [
-        { path: '/dashboard', icon: FiHome, label: 'Dashboard' },
-        { path: '/products', icon: FiPackage, label: 'Products' },
-        { path: '/returns', icon: FiRotateCcw, label: 'Returns' },
-    ];
-
-    // Employee navigation - ANALYTICS section
-    const employeeAnalyticsNav = [
-        { path: '/receipts', icon: FiBarChart2, label: 'Receipts' },
-        { path: '/profile', icon: FiUser, label: 'Profile' },
-    ];
-
     // Admin navigation items
     const adminNavItems = [
-        { path: '/dashboard', icon: FiHome, label: 'Dashboard' },
-        { path: '/products', icon: FiPackage, label: config?.itemsLabel || 'Products' },
-        { path: '/employees', icon: FiUsers, label: config?.staffLabel || 'Employees' },
-        { path: '/customers', icon: FiUserPlus, label: 'Customers' },
-        { path: '/receipts', icon: FiFileText, label: 'Receipts' },
-        { path: '/returns', icon: FiRotateCcw, label: 'Returns' },
-        { path: '/expenses', icon: FiDollarSign, label: 'Expenses' },
-        { path: '/cashbook', icon: FiBook, label: 'Cash Book' },
-        { path: '/vendors', icon: FiTruck, label: 'Vendors' },
-        { path: '/inventory', icon: FiLayers, label: 'Inventory' },
-        { path: '/reports', icon: FiPieChart, label: 'Reports' },
-        { path: '/settings', icon: FiSettings, label: 'Settings' },
+        { path: '/dashboard', icon: FiHome, label: 'Dashboard', module: 'dashboard' },
+        { path: '/products', icon: FiPackage, label: config?.itemsLabel || 'Products', module: 'products' },
+        { path: '/employees', icon: FiUsers, label: config?.staffLabel || 'Employees', module: 'employees' },
+        { path: '/customers', icon: FiUserPlus, label: 'Customers', module: 'customers' },
+        { path: '/receipts', icon: FiFileText, label: 'Receipts', module: 'pos' },
+        { path: '/returns', icon: FiRotateCcw, label: 'Returns', module: 'returns' },
+        { path: '/expenses', icon: FiDollarSign, label: 'Expenses', module: 'expenses' },
+        { path: '/cashbook', icon: FiBook, label: 'Cash Book', module: 'cashbook' },
+        { path: '/vendors', icon: FiTruck, label: 'Vendors', module: 'vendors' },
+        { path: '/inventory', icon: FiLayers, label: 'Inventory', module: 'products' },
+        { path: '/reports', icon: FiPieChart, label: 'Reports', module: 'reports' },
+        { path: '/settings', icon: FiSettings, label: 'Settings', module: 'settings' },
     ];
+
+    // Employee navigation — "Home" is the POS selling screen (controlled by pos permission)
+    const allEmployeeNavItems = [
+        { path: '/dashboard', icon: FiHome, label: 'Home', module: 'pos' },
+        { path: '/analytics', icon: FiBarChart2, label: 'Dashboard', module: 'dashboard' },
+        { path: '/products', icon: FiPackage, label: config?.itemsLabel || 'Products', module: 'products' },
+        { path: '/employees', icon: FiUsers, label: config?.staffLabel || 'Employees', module: 'employees' },
+        { path: '/customers', icon: FiUserPlus, label: 'Customers', module: 'customers' },
+        { path: '/receipts', icon: FiFileText, label: 'Receipts', module: 'pos' },
+        { path: '/returns', icon: FiRotateCcw, label: 'Returns', module: 'returns' },
+        { path: '/expenses', icon: FiDollarSign, label: 'Expenses', module: 'expenses' },
+        { path: '/cashbook', icon: FiBook, label: 'Cash Book', module: 'cashbook' },
+        { path: '/vendors', icon: FiTruck, label: 'Vendors', module: 'vendors' },
+        { path: '/inventory', icon: FiLayers, label: 'Inventory', module: 'products' },
+        { path: '/reports', icon: FiPieChart, label: 'Reports', module: 'reports' },
+        { path: '/settings', icon: FiSettings, label: 'Settings', module: 'settings' },
+        { path: '/profile', icon: FiUser, label: 'Profile', module: null },
+    ];
+
+    // Filter employee nav by permissions
+    const employeeNavItems = isEmployee
+        ? allEmployeeNavItems.filter(item => {
+            if (!item.module) return true; // Profile always visible
+            if (!permissions) return item.module === 'pos';
+            return permissions[item.module]?.view === true;
+        })
+        : [];
 
     // Check if running on macOS for safe area
     const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
@@ -320,31 +334,11 @@ const Layout = ({ children }) => {
                     {/* Navigation */}
                     <nav className="flex-1 px-4 overflow-y-auto dark-scrollbar">
                         {isEmployee ? (
-                            <>
-                                {/* MAIN Section */}
-                                <div className="mb-2">
-                                    <div className="text-[10px] font-semibold tracking-[0.14em] uppercase text-slate-400 dark:text-d-faint px-3 py-3">
-                                        Main
-                                    </div>
-                                    <div className="space-y-1">
-                                        {employeeMainNav.map((item) => (
-                                            <ExpandedNavItem key={item.path} item={item} />
-                                        ))}
-                                    </div>
-                                </div>
-
-                                {/* ANALYTICS Section */}
-                                <div className="mb-2">
-                                    <div className="text-[10px] font-semibold tracking-[0.14em] uppercase text-slate-400 dark:text-d-faint px-3 py-3">
-                                        Analytics
-                                    </div>
-                                    <div className="space-y-1">
-                                        {employeeAnalyticsNav.map((item) => (
-                                            <ExpandedNavItem key={item.path} item={item} />
-                                        ))}
-                                    </div>
-                                </div>
-                            </>
+                            <div className="space-y-1">
+                                {employeeNavItems.map((item) => (
+                                    <ExpandedNavItem key={item.path} item={item} />
+                                ))}
+                            </div>
                         ) : (
                             <div className="space-y-1">
                                 {adminNavItems.map((item) => (

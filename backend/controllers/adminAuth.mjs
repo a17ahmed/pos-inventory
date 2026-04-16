@@ -93,20 +93,7 @@ const login = async (req, res) => {
 
             // Include business info if available
             if (getAdmin.business) {
-                response.business = {
-                    _id: getAdmin.business._id,
-                    name: getAdmin.business.name,
-                    email: getAdmin.business.email,
-                    phone: getAdmin.business.phone,
-                    address: getAdmin.business.address,
-                    currency: getAdmin.business.currency,
-                    taxRate: getAdmin.business.taxRate,
-                    cashTaxRate: getAdmin.business.cashTaxRate || 0,
-                    cardTaxRate: getAdmin.business.cardTaxRate || 0,
-                    taxLabel: getAdmin.business.taxLabel,
-                    businessType: getAdmin.business.businessType,
-                    settings: getAdmin.business.settings
-                };
+                response.business = getAdmin.business;
             }
 
             res.json(response);

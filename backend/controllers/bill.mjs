@@ -492,6 +492,7 @@ export const getAllBills = async (req, res) => {
 
         if (req.query.status) query.status = req.query.status;
         if (req.query.type) query.type = req.query.type;
+        else query.type = { $ne: "opening_balance" };
         if (req.query.paymentStatus) query.paymentStatus = req.query.paymentStatus;
 
         // Date range filter
@@ -1132,6 +1133,7 @@ export const getReturns = async (req, res) => {
     try {
         const query = {
             business: req.user.businessId,
+            type: "sale",
             returnStatus: { $ne: "none" },
         };
 
@@ -1173,6 +1175,12 @@ export const getBillForReturn = async (req, res) => {
             });
         }
 
+        if (bill.type === "opening_balance") {
+            return res.status(400).json({
+                message: "Cannot process return on an opening balance entry",
+            });
+        }
+
         if (bill.status === "cancelled") {
             return res.status(400).json({ message: "Cannot process return on a cancelled bill" });
         }
@@ -1209,6 +1217,7 @@ export const getReturnsSummary = async (req, res) => {
             {
                 $match: {
                     business: new mongoose.Types.ObjectId(req.user.businessId),
+                    type: "sale",
                     returnStatus: { $ne: "none" },
                 },
             },

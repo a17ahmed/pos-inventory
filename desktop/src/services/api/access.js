@@ -1,5 +1,8 @@
 import api from '../api';
 
+export const getMyAccess = () =>
+    api.get('/access/me');
+
 export const getAllAccess = () =>
     api.get('/access');
 

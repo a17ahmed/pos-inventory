@@ -133,7 +133,7 @@ const CustomerLedger = () => {
                 });
             }
             const entry = billMap.get(key);
-            if (e.type === 'bill') entry.total += e.debit || 0;
+            if (e.type === 'bill' || e.type === 'opening_balance') entry.total += e.debit || 0;
             else entry.credited += e.credit || 0;
         }
         return Array.from(billMap.values())
