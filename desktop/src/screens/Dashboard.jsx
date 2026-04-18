@@ -1692,7 +1692,9 @@ const AdminDashboard = () => {
             const periodExpenses = allExpenses.filter(e => new Date(e.date || e.createdAt) >= startDate);
             const expenses = periodExpenses.reduce((sum, e) => sum + (e.amount || 0), 0);
 
-            const returns = backendStats.totalRefunded || 0;
+            const linkedReturns = backendStats.linkedReturns || 0;
+            const standaloneRefunds = backendStats.standaloneRefunds || 0;
+            const returns = linkedReturns + standaloneRefunds;
             const cogs = backendStats.adjustedCogs ?? backendStats.totalCost ?? 0;
             const netRevenue = backendStats.netRevenue || 0;
             const grossProfit = netRevenue - cogs;
@@ -1709,6 +1711,8 @@ const AdminDashboard = () => {
             setProfitLoss({
                 grossRevenue: backendStats.grossRevenue,
                 returns,
+                linkedReturns,
+                standaloneRefunds,
                 netRevenue: netRevenue,
                 cogs,
                 grossProfit,
@@ -1843,14 +1847,16 @@ const AdminDashboard = () => {
             title: 'Net Profit Calculation',
             items: [
                 { label: 'Gross Revenue', value: profitLoss.grossRevenue, color: '#34e8a1', sign: '' },
-                { label: 'Returns/Refunds', value: profitLoss.returns, color: '#ff6b6b', sign: '\u2212' },
+                { label: 'Bill Returns', value: profitLoss.linkedReturns, color: '#ff6b6b', sign: '\u2212', sub: true },
+                { label: 'Standalone Refunds', value: profitLoss.standaloneRefunds, color: '#ff9f43', sign: '\u2212', sub: true },
+                { label: 'Total Returns', value: profitLoss.returns, color: '#ff6b6b', sign: '\u2212' },
                 { label: 'Net Revenue', value: profitLoss.netRevenue, color: '#5b9cf6', sign: '=' },
                 { label: 'Cost of Goods', value: profitLoss.cogs, color: '#ff6b6b', sign: '\u2212' },
                 { label: 'Gross Profit', value: profitLoss.grossProfit, color: '#ffd264', sign: '=' },
                 { label: 'Expenses', value: profitLoss.expenses, color: '#ff6b6b', sign: '\u2212' },
                 { label: 'Net Profit', value: profitLoss.netProfit, color: profitLoss.netProfit >= 0 ? '#34e8a1' : '#ff6b6b', sign: '=', isBold: true },
             ],
-            formula: 'Revenue \u2212 Returns \u2212 COGS \u2212 Expenses = Net Profit'
+            formula: 'Revenue \u2212 (Bill Returns + Standalone Refunds) \u2212 COGS \u2212 Expenses = Net Profit'
         },
         cogs: {
             title: 'Cost of Goods Sold',
@@ -1884,12 +1890,12 @@ const AdminDashboard = () => {
                     </div>
                     <div className="space-y-3 mb-4">
                         {detail.items.map((item, idx) => (
-                            <div key={idx} className={`flex items-center justify-between py-2 ${item.isBold ? 'border-t border-[rgba(255,255,255,0.1)] pt-3' : ''}`}>
-                                <span className="text-sm text-d-muted flex items-center gap-2">
+                            <div key={idx} className={`flex items-center justify-between ${item.sub ? 'py-1 pl-6 opacity-70' : 'py-2'} ${item.isBold ? 'border-t border-[rgba(255,255,255,0.1)] pt-3' : ''}`}>
+                                <span className={`${item.sub ? 'text-xs' : 'text-sm'} text-d-muted flex items-center gap-2`}>
                                     {item.sign && <span className="text-d-muted font-mono">{item.sign}</span>}
                                     {item.label}
                                 </span>
-                                <span className={`font-bebas text-lg ${item.isBold ? 'text-xl' : ''}`} style={{ color: item.color || '#fef9ec' }}>
+                                <span className={`font-bebas ${item.sub ? 'text-base' : 'text-lg'} ${item.isBold ? 'text-xl' : ''}`} style={{ color: item.color || '#fef9ec' }}>
                                     {item.isText ? item.value : `${currency} ${formatCurrency(item.value)}`}
                                 </span>
                             </div>

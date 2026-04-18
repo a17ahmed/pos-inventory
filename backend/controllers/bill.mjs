@@ -1822,9 +1822,12 @@ export const getBillStats = async (req, res) => {
         const periodRefunds = _mergeRefunds(facetResult.periodRefundBreakdown, facetResult.periodStandaloneRefunds);
         const todayRefunds = _mergeRefunds(facetResult.todayRefundBreakdown, facetResult.todayStandaloneRefunds);
 
-        // Use refund breakdown total (filters by returns.returnedAt) instead of
-        // period.totalRefunded (which only counts bills created in the period)
-        const periodTotalRefunded = periodRefunds.total;
+        // For P&L: use period.totalRefunded (from sale bills created in the period)
+        // + standalone refunds created in the period. This aligns with revenue/COGS
+        // which are also filtered by bill createdAt, ensuring consistency.
+        // The returnedAt-based periodRefunds is kept for cash drawer / refund breakdown display.
+        const standaloneRefundTotal = (facetResult.periodStandaloneRefunds || []).reduce((s, r) => s + r.amount, 0);
+        const periodTotalRefunded = period.totalRefunded + standaloneRefundTotal;
 
         // COGS of items still with customers (directly computed from item data)
         const adjustedCogs = facetResult.periodNetCogs?.[0]?.netCogs || 0;
@@ -1885,6 +1888,8 @@ export const getBillStats = async (req, res) => {
 
             // Returns & refunds
             totalRefunded: periodTotalRefunded,
+            linkedReturns: period.totalRefunded,
+            standaloneRefunds: standaloneRefundTotal,
             refundBreakdown: periodRefunds,
 
             // P&L
