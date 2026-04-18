@@ -7,7 +7,8 @@ const businessTypeRouter = express.Router();
 businessTypeRouter.get('/', getBusinessTypes);
 businessTypeRouter.get('/:code', getBusinessTypeByCode);
 
-// Protected route (for admin to add new types)
-businessTypeRouter.post('/', createBusinessType);
+// Protected route — POST is disabled in production (types are seeded)
+// To add new types, use the database seeder or enable this with proper auth
+// businessTypeRouter.post('/', createBusinessType);
 
 export default businessTypeRouter;

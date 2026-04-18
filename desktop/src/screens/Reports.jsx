@@ -87,9 +87,12 @@ const fmtDate = (d) => new Date(d).toLocaleDateString('en-IN', { day: '2-digit',
 
 const getDateRange = (filter, customStart, customEnd) => {
     if (filter === 'custom' && customStart && customEnd) {
+        // Parse "YYYY-MM-DD" as local dates, not UTC
+        const [sy, sm, sd] = customStart.split('-').map(Number);
+        const [ey, em, ed] = customEnd.split('-').map(Number);
         return {
-            startDate: new Date(customStart).toISOString(),
-            endDate: new Date(customEnd + 'T23:59:59.999').toISOString(),
+            startDate: new Date(sy, sm - 1, sd).toISOString(),
+            endDate: new Date(ey, em - 1, ed, 23, 59, 59, 999).toISOString(),
         };
     }
     const now = new Date();

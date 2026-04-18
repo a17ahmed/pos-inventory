@@ -3,6 +3,7 @@ import Supply from '../models/supply.mjs';
 import Counter from '../models/counter.mjs';
 import mongoose from 'mongoose';
 import { recordCashEntry } from './cashbook.mjs';
+import { startOfDay, endOfDay } from '../utils/dateHelpers.mjs';
 
 // Create vendor
 const createVendor = async (req, res) => {
@@ -277,8 +278,8 @@ const getVendorLedger = async (req, res) => {
 
         if (startDate || endDate) {
             supplyFilter.billDate = {};
-            if (startDate) supplyFilter.billDate.$gte = new Date(startDate);
-            if (endDate) supplyFilter.billDate.$lte = new Date(endDate);
+            if (startDate) supplyFilter.billDate.$gte = startOfDay(startDate);
+            if (endDate) supplyFilter.billDate.$lte = endOfDay(endDate);
         }
 
         const supplies = await Supply.find(supplyFilter)

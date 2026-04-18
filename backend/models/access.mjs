@@ -27,6 +27,7 @@ const accessSchema = new Schema(
             returns: {
                 view: { type: Boolean, default: false },
                 create: { type: Boolean, default: false },
+                standalone: { type: Boolean, default: false },
                 cancel: { type: Boolean, default: false }
             },
 

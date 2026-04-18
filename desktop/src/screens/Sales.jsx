@@ -15,7 +15,9 @@ import {
     FiX,
     FiCheck,
     FiSmartphone,
+    FiPrinter,
 } from 'react-icons/fi';
+import { printReceipt } from '../utils/printReceipt';
 
 const Sales = () => {
     const { business } = useBusiness();
@@ -196,15 +198,47 @@ const Sales = () => {
 
             const response = await createReceipt(orderData);
 
-            setSuccessData({
+            const receiptInfo = {
                 billNumber: response.data?.billNumber,
-                total: total,
+                total,
                 cashGiven: parseFloat(cashGiven || 0),
                 change: changeAmount,
                 paymentMethod,
-            });
+                items: cart.map(item => ({
+                    name: item.name,
+                    qty: item.qty,
+                    price: item.price,
+                    discountAmount: 0,
+                })),
+                subtotal,
+                discount,
+                tax: cart.reduce((sum, item) => sum + (item.gst || 0) * item.qty, 0),
+                customerName: customerName || 'Walk-in Customer',
+            };
+            setSuccessData(receiptInfo);
             setShowPaymentModal(false);
             setShowSuccess(true);
+
+            // Auto-print receipt (only in Electron — browser shows print dialog which is disruptive)
+            if (window.electronAPI?.printReceipt) printReceipt({
+                store: business,
+                currency: business?.currency || 'Rs.',
+                billNumber: receiptInfo.billNumber || '-',
+                date: new Date().toLocaleString('en-PK', { dateStyle: 'medium', timeStyle: 'short' }),
+                customerName: receiptInfo.customerName,
+                cashierName: user?.name || '',
+                items: receiptInfo.items,
+                subtotal: receiptInfo.subtotal,
+                tax: receiptInfo.tax,
+                itemDiscounts: 0,
+                billDiscount: receiptInfo.discount,
+                total: receiptInfo.total,
+                paymentMethod: receiptInfo.paymentMethod,
+                amountPaid: receiptInfo.total,
+                cashGiven: receiptInfo.cashGiven,
+                change: receiptInfo.change,
+            });
+
             clearCart();
 
             setTimeout(() => {
@@ -229,7 +263,7 @@ const Sales = () => {
     };
 
     const formatCurrency = (amount) => {
-        return `${business?.currency || 'PKR'} ${(amount || 0).toLocaleString()}`;
+        return `${business?.currency || 'Rs.'} ${(amount || 0).toLocaleString()}`;
     };
 
     return (
@@ -600,6 +634,33 @@ const Sales = () => {
                                 )}
                             </div>
                         )}
+                        <button
+                            onClick={() => {
+                                if (!successData) return;
+                                printReceipt({
+                                    store: business,
+                                    currency: business?.currency || 'Rs.',
+                                    billNumber: successData.billNumber || '-',
+                                    date: new Date().toLocaleString('en-PK', { dateStyle: 'medium', timeStyle: 'short' }),
+                                    customerName: successData.customerName,
+                                    cashierName: user?.name || '',
+                                    items: successData.items,
+                                    subtotal: successData.subtotal,
+                                    tax: successData.tax,
+                                    itemDiscounts: 0,
+                                    billDiscount: successData.discount,
+                                    total: successData.total,
+                                    paymentMethod: successData.paymentMethod,
+                                    amountPaid: successData.total,
+                                    cashGiven: successData.cashGiven,
+                                    change: successData.change,
+                                });
+                            }}
+                            className="mt-4 flex items-center justify-center gap-2 w-full py-3 bg-primary-500 text-white rounded-xl font-medium hover:bg-primary-600"
+                        >
+                            <FiPrinter size={18} />
+                            Print Receipt
+                        </button>
                     </div>
                 </div>
             )}

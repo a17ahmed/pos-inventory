@@ -7,6 +7,7 @@ import mongoose from 'mongoose';
 import { cloudinary } from '../middleware/upload.mjs';
 import CashBook from '../models/cashbook.mjs';
 import { recordCashEntry } from './cashbook.mjs';
+import { startOfDay, endOfDay } from '../utils/dateHelpers.mjs';
 
 // Helper: log stock movements in bulk
 // When session is provided (inside transaction), errors propagate to trigger abort.
@@ -57,12 +58,13 @@ const createSupply = async (req, res) => {
             return res.status(400).json({ message: 'Each item must have a product ID' });
         }
 
+        const uniqueProductIds = [...new Set(productIds)];
         const products = await Product.find({
-            _id: { $in: productIds },
+            _id: { $in: uniqueProductIds },
             business: req.user.businessId
         });
 
-        if (products.length !== productIds.length) {
+        if (products.length !== uniqueProductIds.length) {
             return res.status(400).json({ message: 'One or more products not found in this business' });
         }
 
@@ -219,7 +221,7 @@ const createSupply = async (req, res) => {
 
         res.status(201).json(supply);
     } catch (error) {
-        res.status(500).json({ message: error.message });
+        res.status(500).json({ message: 'Internal server error' });
     }
 };
 
@@ -233,8 +235,8 @@ const getAllSupplies = async (req, res) => {
         if (paymentStatus) filter.paymentStatus = paymentStatus;
         if (startDate || endDate) {
             filter.billDate = {};
-            if (startDate) filter.billDate.$gte = new Date(startDate);
-            if (endDate) filter.billDate.$lte = new Date(endDate);
+            if (startDate) filter.billDate.$gte = startOfDay(startDate);
+            if (endDate) filter.billDate.$lte = endOfDay(endDate);
         }
 
         const skip = (Number(page) - 1) * Number(limit);
@@ -253,7 +255,7 @@ const getAllSupplies = async (req, res) => {
             totalPages: Math.ceil(total / Number(limit))
         });
     } catch (error) {
-        res.status(500).json({ message: error.message });
+        res.status(500).json({ message: 'Internal server error' });
     }
 };
 
@@ -271,7 +273,7 @@ const getSupply = async (req, res) => {
 
         res.json(supply);
     } catch (error) {
-        res.status(500).json({ message: error.message });
+        res.status(500).json({ message: 'Internal server error' });
     }
 };
 
@@ -441,7 +443,7 @@ const updateSupply = async (req, res) => {
 
         res.json(supply);
     } catch (error) {
-        res.status(500).json({ message: error.message });
+        res.status(500).json({ message: 'Internal server error' });
     }
 };
 
@@ -505,29 +507,40 @@ const recordPayment = async (req, res) => {
             reference: reference || ''
         });
 
-        // pre-save hook recalculates paidAmount from payments[], remaining + status
-        await supply.save();
-
-        // Record in cashbook for cash payments
+        // Use transaction for cash payments (supply + cashbook must be atomic)
         if (paymentMethod === 'cash') {
-            await recordCashEntry({
-                type: 'vendor_payment',
-                amount: payAmount,
-                direction: 'out',
-                referenceType: 'supply',
-                referenceId: supply._id,
-                referenceNumber: `Supply #${supply.supplyNumber}`,
-                description: `Supply payment - ${supply.vendorName || 'Vendor'} (Supply #${supply.supplyNumber})`,
-                note: note || '',
-                performedBy: paidBy,
-                performedById: req.user.id,
-                businessId: req.user.businessId,
-            });
+            const session = await mongoose.startSession();
+            try {
+                session.startTransaction();
+                await supply.save({ session });
+                await recordCashEntry({
+                    type: 'vendor_payment',
+                    amount: payAmount,
+                    direction: 'out',
+                    referenceType: 'supply',
+                    referenceId: supply._id,
+                    referenceNumber: `Supply #${supply.supplyNumber}`,
+                    description: `Supply payment - ${supply.vendorName || 'Vendor'} (Supply #${supply.supplyNumber})`,
+                    note: note || '',
+                    performedBy: paidBy,
+                    performedById: req.user.id,
+                    businessId: req.user.businessId,
+                    session,
+                });
+                await session.commitTransaction();
+            } catch (txError) {
+                await session.abortTransaction();
+                throw txError;
+            } finally {
+                session.endSession();
+            }
+        } else {
+            await supply.save();
         }
 
         res.json(supply);
     } catch (error) {
-        res.status(500).json({ message: error.message });
+        res.status(500).json({ message: 'Internal server error' });
     }
 };
 
@@ -586,6 +599,27 @@ const deleteSupply = async (req, res) => {
                 })), session);
             }
 
+            // Reverse cashbook entries for cash payments
+            const cashTotal = supply.payments
+                .filter(p => p.method === 'cash')
+                .reduce((sum, p) => sum + p.amount, 0);
+            if (cashTotal > 0) {
+                await recordCashEntry({
+                    type: 'vendor_payment_reversal',
+                    amount: cashTotal,
+                    direction: 'in',
+                    referenceType: 'supply',
+                    referenceId: supply._id,
+                    referenceNumber: `Supply #${supply.supplyNumber}`,
+                    description: `Reversed: Supply #${supply.supplyNumber} deleted`,
+                    note: 'Supply deleted',
+                    performedBy: req.user.adminId ? 'Admin' : req.user.name || '',
+                    performedById: req.user.id,
+                    businessId: req.user.businessId,
+                    session,
+                });
+            }
+
             await Supply.deleteOne({ _id: supply._id }, { session });
             await session.commitTransaction();
         } catch (txError) {
@@ -597,7 +631,7 @@ const deleteSupply = async (req, res) => {
 
         res.json({ message: 'Supply deleted successfully' });
     } catch (error) {
-        res.status(500).json({ message: error.message });
+        res.status(500).json({ message: 'Internal server error' });
     }
 };
 
@@ -686,7 +720,7 @@ const getSupplyStats = async (req, res) => {
             byStatus
         });
     } catch (error) {
-        res.status(500).json({ message: error.message });
+        res.status(500).json({ message: 'Internal server error' });
     }
 };
 
@@ -823,7 +857,7 @@ const processSupplyReturn = async (req, res) => {
             supply
         });
     } catch (error) {
-        res.status(500).json({ message: error.message });
+        res.status(500).json({ message: 'Internal server error' });
     }
 };
 

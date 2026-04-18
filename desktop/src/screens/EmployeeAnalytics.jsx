@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { toLocalDateStr } from '../utils/date';
 import { useAuth } from '../context/AuthContext';
 import { useBusiness } from '../context/BusinessContext';
 import { getReceiptStats, getTopProducts } from '../services/api/receipts';
@@ -110,7 +111,7 @@ const EmployeeAnalytics = () => {
             for (let i = 0; i < 7; i++) {
                 const day = new Date(startDate);
                 day.setDate(startDate.getDate() + i);
-                const key = day.toISOString().split('T')[0];
+                const key = toLocalDateStr(day);
                 const dayName = day.toLocaleDateString('en', { weekday: 'short' });
                 data.push({
                     name: dayName,

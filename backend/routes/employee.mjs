@@ -1,4 +1,5 @@
 import express from 'express';
+import rateLimit from 'express-rate-limit';
 import { validate } from '../middleware/validate.mjs';
 import {
     createEmployeeSchema,
@@ -62,5 +63,10 @@ export const employeeAuthRouter = express.Router();
 // Employee login
 employeeAuthRouter.post('/login', validate(employeeLoginSchema), employeeLogin);
 
-// Employee change password
-employeeAuthRouter.post('/change-password', validate(employeeChangePasswordSchema), employeeChangePassword);
+// Employee change password (strict rate limit: 3 attempts per 15 min)
+const changePasswordLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 3,
+    message: { message: 'Too many password change attempts, please try again later.' }
+});
+employeeAuthRouter.post('/change-password', changePasswordLimiter, validate(employeeChangePasswordSchema), employeeChangePassword);

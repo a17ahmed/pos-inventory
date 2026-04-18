@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import Product from '../models/product.mjs';
 import StockMovement from '../models/stockMovement.mjs';
 import Counter from '../models/counter.mjs';
+import { startOfDay, endOfDay } from '../utils/dateHelpers.mjs';
 
 // ─────────────────────────────────────────────────────────────
 // Helpers: auto-generate SKU and barcode per business
@@ -107,17 +108,17 @@ const getAllProducts = async (req, res) => {
             query.trackStock = true;
         }
 
-        let products = await Product.find(query).sort({ name: 1 });
-
-        // Search filter (name, barcode, sku)
+        // Search filter in MongoDB (not JavaScript)
         if (search) {
-            const searchLower = search.toLowerCase();
-            products = products.filter(p =>
-                p.name.toLowerCase().includes(searchLower) ||
-                p.barcode?.toLowerCase().includes(searchLower) ||
-                p.sku?.toLowerCase().includes(searchLower)
-            );
+            const searchRegex = new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+            query.$or = [
+                { name: searchRegex },
+                { barcode: searchRegex },
+                { sku: searchRegex }
+            ];
         }
+
+        let products = await Product.find(query).sort({ name: 1 });
 
         res.json(products);
     } catch (error) {
@@ -231,39 +232,39 @@ const deleteProduct = async (req, res) => {
     }
 };
 
-// Update stock quantity
+// Update stock quantity (atomic)
 const updateStock = async (req, res) => {
     try {
         const { quantity, operation } = req.body; // operation: 'add', 'subtract', 'set'
 
-        const product = await Product.findOne({
-            _id: req.params.id,
-            business: req.user.businessId
-        });
-
-        if (!product) {
-            return res.status(404).json({ message: 'Product not found' });
-        }
-
-        let newQuantity = product.stockQuantity;
+        const filter = { _id: req.params.id, business: req.user.businessId };
+        let update;
 
         switch (operation) {
             case 'add':
-                newQuantity += quantity;
+                update = { $inc: { stockQuantity: quantity } };
                 break;
             case 'subtract':
-                newQuantity -= quantity;
-                if (newQuantity < 0) newQuantity = 0;
+                update = { $inc: { stockQuantity: -quantity } };
                 break;
             case 'set':
-                newQuantity = quantity;
+                update = { $set: { stockQuantity: quantity } };
                 break;
             default:
                 return res.status(400).json({ message: 'Invalid operation' });
         }
 
-        product.stockQuantity = newQuantity;
-        await product.save();
+        const product = await Product.findOneAndUpdate(filter, update, { new: true });
+
+        if (!product) {
+            return res.status(404).json({ message: 'Product not found' });
+        }
+
+        // Ensure stock doesn't go negative
+        if (product.stockQuantity < 0) {
+            product.stockQuantity = 0;
+            await product.save();
+        }
 
         res.json(product);
     } catch (error) {
@@ -389,12 +390,8 @@ const getStockMovements = async (req, res) => {
         if (type) filter.type = type;
         if (startDate || endDate) {
             filter.createdAt = {};
-            if (startDate) filter.createdAt.$gte = new Date(startDate);
-            if (endDate) {
-                const end = new Date(endDate);
-                end.setHours(23, 59, 59, 999);
-                filter.createdAt.$lte = end;
-            }
+            if (startDate) filter.createdAt.$gte = startOfDay(startDate);
+            if (endDate) filter.createdAt.$lte = endOfDay(endDate);
         }
 
         const skip = (Number(page) - 1) * Number(limit);

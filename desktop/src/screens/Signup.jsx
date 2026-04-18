@@ -86,7 +86,7 @@ const Signup = () => {
     };
 
     const handleSubmit = async (e) => {
-        e.preventDefault();
+        if (e) e.preventDefault();
         if (!validateStep()) return;
 
         setLoading(true);

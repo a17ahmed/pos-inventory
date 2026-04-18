@@ -79,7 +79,7 @@ const Layout = ({ children }) => {
         : [];
 
     // Check if running on macOS for safe area
-    const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+    const isMac = navigator.userAgentData?.platform === 'macOS' || /Mac/i.test(navigator.userAgent);
 
     // Slim Sidebar Nav Item (Icon only, tooltip on hover)
     const SlimNavItem = ({ item }) => (

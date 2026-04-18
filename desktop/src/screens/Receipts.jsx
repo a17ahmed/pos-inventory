@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useBusiness } from '../context/BusinessContext';
 import { getAllReceipts, getReceiptStats, getReceiptsPaginated } from '../services/api/receipts';
+import { printReceipt } from '../utils/printReceipt';
+import { downloadReceipt } from '../utils/downloadReceipt';
 import {
     FiSearch,
     FiFileText,
@@ -221,8 +223,72 @@ const Receipts = () => {
         return matchesSearch && matchesDate;
     });
 
+    const currency = business?.currency || 'Rs.';
+
     const formatCurrency = (amount) => {
-        return `Rs. ${(amount || 0).toLocaleString()}`;
+        return `${currency} ${(amount || 0).toLocaleString()}`;
+    };
+
+    const handlePrint = (receipt) => {
+        const items = (receipt.items || []).map(it => ({
+            name: it.name,
+            qty: it.qty || it.quantity || 0,
+            price: it.price || it.sellingPrice || 0,
+            discountAmount: it.discountAmount || 0,
+        }));
+        const subtotal = items.reduce((s, it) => s + (it.price * it.qty - (Number(it.discountAmount) || 0)), 0);
+        const paymentMethod = receipt.payments?.[0]?.method || 'cash';
+        const cashPayment = receipt.payments?.find(p => p.method === 'cash');
+
+        printReceipt({
+            store: business,
+            currency,
+            billNumber: receipt.billNumber || '-',
+            date: new Date(receipt.createdAt).toLocaleString('en-PK', { dateStyle: 'medium', timeStyle: 'short' }),
+            customerName: receipt.customerName || 'Walk-in',
+            cashierName: receipt.cashierName || '',
+            items,
+            subtotal,
+            tax: receipt.totalTax || 0,
+            itemDiscounts: receipt.totalItemDiscount || 0,
+            billDiscount: receipt.billDiscountAmount || 0,
+            total: receipt.total || 0,
+            paymentMethod,
+            amountPaid: receipt.amountPaid || receipt.total || 0,
+            cashGiven: cashPayment?.amount || 0,
+            change: 0,
+        });
+    };
+
+    const handleDownload = (receipt) => {
+        const items = (receipt.items || []).map(it => ({
+            name: it.name,
+            qty: it.qty || it.quantity || 0,
+            price: it.price || it.sellingPrice || 0,
+            discountAmount: it.discountAmount || 0,
+        }));
+        const subtotal = items.reduce((s, it) => s + (it.price * it.qty - (Number(it.discountAmount) || 0)), 0);
+        const paymentMethod = receipt.payments?.[0]?.method || 'cash';
+        const cashPayment = receipt.payments?.find(p => p.method === 'cash');
+
+        downloadReceipt({
+            store: business,
+            currency,
+            billNumber: receipt.billNumber || '-',
+            date: new Date(receipt.createdAt).toLocaleString('en-PK', { dateStyle: 'medium', timeStyle: 'short' }),
+            customerName: receipt.customerName || 'Walk-in',
+            cashierName: receipt.cashierName || '',
+            items,
+            subtotal,
+            tax: receipt.totalTax || 0,
+            itemDiscounts: receipt.totalItemDiscount || 0,
+            billDiscount: receipt.billDiscountAmount || 0,
+            total: receipt.total || 0,
+            paymentMethod,
+            amountPaid: receipt.amountPaid || receipt.total || 0,
+            cashGiven: cashPayment?.amount || 0,
+            change: 0,
+        });
     };
 
     const formatDate = (date) => {
@@ -236,7 +302,7 @@ const Receipts = () => {
     };
 
     const getReceiptType = (receipt) => {
-        if (receipt.receiptType?.includes('_refund')) {
+        if (receipt.type === 'refund') {
             return { label: 'Refund', color: 'bg-[rgba(255,107,107,0.15)] text-d-red', hasReturns: false };
         }
         // Check if this sale has returns
@@ -484,6 +550,7 @@ const Receipts = () => {
                                                     <FiEye size={16} />
                                                 </button>
                                                 <button
+                                                    onClick={() => handlePrint(receipt)}
                                                     className="p-2 text-slate-500 dark:text-d-muted hover:text-d-blue hover:bg-[rgba(91,156,246,0.1)] rounded-lg transition-colors"
                                                     title="Print"
                                                 >
@@ -811,30 +878,94 @@ const Receipts = () => {
                                 </div>
                             )}
 
-                            {/* Profit Summary (for admin context) */}
-                            {(r.billProfit !== undefined || r.netProfit !== undefined) && (
+                            {/* Profit Breakdown (for admin context) */}
+                            {(r.billProfit !== undefined || r.netProfit !== undefined) && (() => {
+                                const totalCost = r.totalCost || 0;
+                                const billProfit = r.billProfit || 0;
+                                const hasReturns = (r.totalRefunded || 0) > 0;
+                                const returnedCost = r.items?.reduce((s, it) => s + ((it.costPrice || 0) * (it.returnedQty || 0)), 0) || 0;
+                                const keptCost = totalCost - returnedCost;
+                                const netProfit = r.netProfit || 0;
+                                return (
                                 <div className="bg-slate-50 dark:bg-d-elevated rounded-xl p-4">
-                                    <h4 className="font-semibold text-slate-800 dark:text-d-heading mb-2 text-sm">Profit Summary</h4>
-                                    <div className="grid grid-cols-3 gap-4 text-center">
-                                        <div>
-                                            <p className="text-xs text-slate-400 dark:text-d-faint">Cost</p>
-                                            <p className="font-semibold text-slate-800 dark:text-d-text">{formatCurrency(r.totalCost)}</p>
+                                    <h4 className="font-semibold text-slate-800 dark:text-d-heading mb-3 text-sm">Profit Breakdown</h4>
+                                    <div className="space-y-2 text-sm">
+                                        {/* Revenue */}
+                                        <div className="flex justify-between">
+                                            <span className="text-slate-500 dark:text-d-muted">Revenue (Sale Total)</span>
+                                            <span className="text-slate-800 dark:text-d-text font-medium">{formatCurrency(r.total)}</span>
                                         </div>
-                                        <div>
-                                            <p className="text-xs text-slate-400 dark:text-d-faint">Gross Profit</p>
-                                            <p className={`font-semibold ${(r.billProfit || 0) >= 0 ? 'text-emerald-600 dark:text-d-green' : 'text-red-600 dark:text-d-red'}`}>
-                                                {formatCurrency(r.billProfit)}
-                                            </p>
+                                        <div className="flex justify-between">
+                                            <span className="text-slate-500 dark:text-d-muted">Total Cost of Goods</span>
+                                            <span className="text-red-500 dark:text-d-red">-{formatCurrency(totalCost)}</span>
                                         </div>
-                                        <div>
-                                            <p className="text-xs text-slate-400 dark:text-d-faint">Net Profit</p>
-                                            <p className={`font-semibold ${(r.netProfit || 0) >= 0 ? 'text-emerald-600 dark:text-d-green' : 'text-red-600 dark:text-d-red'}`}>
-                                                {formatCurrency(r.netProfit)}
-                                            </p>
+                                        <div className="flex justify-between border-t border-slate-200 dark:border-d-border pt-2">
+                                            <span className="text-slate-700 dark:text-d-text font-medium">Gross Profit</span>
+                                            <span className={`font-semibold ${billProfit >= 0 ? 'text-emerald-600 dark:text-d-green' : 'text-red-600 dark:text-d-red'}`}>
+                                                {formatCurrency(billProfit)}
+                                            </span>
                                         </div>
+
+                                        {hasReturns && (
+                                            <>
+                                                <div className="border-t border-slate-200 dark:border-d-border pt-2 mt-1">
+                                                    <p className="text-xs text-slate-400 dark:text-d-faint uppercase tracking-wider mb-2">After Returns</p>
+                                                </div>
+                                                <div className="flex justify-between">
+                                                    <span className="text-slate-500 dark:text-d-muted">Refunded to Customer</span>
+                                                    <span className="text-orange-500">-{formatCurrency(r.totalRefunded)}</span>
+                                                </div>
+                                                <div className="flex justify-between">
+                                                    <span className="text-slate-500 dark:text-d-muted">Cost Recovered (Restocked)</span>
+                                                    <span className="text-emerald-500 dark:text-d-green">+{formatCurrency(returnedCost)}</span>
+                                                </div>
+                                                <div className="flex justify-between text-xs text-slate-400 dark:text-d-faint">
+                                                    <span>Kept Revenue</span>
+                                                    <span>{formatCurrency((r.total || 0) - (r.totalRefunded || 0))}</span>
+                                                </div>
+                                                <div className="flex justify-between text-xs text-slate-400 dark:text-d-faint">
+                                                    <span>Kept Cost</span>
+                                                    <span>{formatCurrency(keptCost)}</span>
+                                                </div>
+                                            </>
+                                        )}
+
+                                        <div className="flex justify-between border-t border-slate-200 dark:border-d-border pt-2">
+                                            <span className="text-slate-800 dark:text-d-heading font-semibold">Net Profit</span>
+                                            <span className={`font-bold ${netProfit >= 0 ? 'text-emerald-600 dark:text-d-green' : 'text-red-600 dark:text-d-red'}`}>
+                                                {formatCurrency(netProfit)}
+                                            </span>
+                                        </div>
+
+                                        {/* Per-item cost breakdown */}
+                                        {r.items && r.items.length > 0 && (
+                                            <div className="border-t border-slate-200 dark:border-d-border pt-2 mt-1">
+                                                <p className="text-xs text-slate-400 dark:text-d-faint uppercase tracking-wider mb-2">Item Cost Details</p>
+                                                {r.items.map((it, idx) => {
+                                                    const qty = it.qty || it.quantity || 0;
+                                                    const cost = (it.costPrice || 0) * qty;
+                                                    const profit = (it.itemProfit || 0);
+                                                    const retQty = it.returnedQty || 0;
+                                                    return (
+                                                        <div key={idx} className="flex justify-between items-start py-1">
+                                                            <div>
+                                                                <span className="text-slate-600 dark:text-d-muted">{it.name}</span>
+                                                                <span className="text-xs text-slate-400 dark:text-d-faint ml-1">
+                                                                    (cost {formatCurrency(it.costPrice || 0)} × {qty}{retQty > 0 ? `, ${retQty} returned` : ''})
+                                                                </span>
+                                                            </div>
+                                                            <span className={`text-xs font-medium ${(it.netProfit || profit) >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
+                                                                {formatCurrency(it.netProfit ?? profit)}
+                                                            </span>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        )}
                                     </div>
                                 </div>
-                            )}
+                                );
+                            })()}
 
                             {/* Notes */}
                             {r.notes && (
@@ -845,11 +976,11 @@ const Receipts = () => {
 
                             {/* Actions */}
                             <div className="flex gap-3 pt-2">
-                                <button className="flex-1 py-3 border border-slate-200 dark:border-d-border rounded-xl font-medium text-slate-500 dark:text-d-muted hover:bg-slate-100 dark:hover:bg-d-glass transition-colors flex items-center justify-center gap-2">
+                                <button onClick={() => handlePrint(r)} className="flex-1 py-3 border border-slate-200 dark:border-d-border rounded-xl font-medium text-slate-500 dark:text-d-muted hover:bg-slate-100 dark:hover:bg-d-glass transition-colors flex items-center justify-center gap-2">
                                     <FiPrinter size={18} />
                                     Print
                                 </button>
-                                <button className="flex-1 py-3 bg-gradient-to-r from-amber-400 to-amber-500 dark:from-d-accent dark:to-d-accent-s text-white dark:text-d-card rounded-xl font-semibold hover:shadow-md dark:hover:shadow-[0_4px_20px_rgba(255,210,100,0.4)] transition-all flex items-center justify-center gap-2">
+                                <button onClick={() => handleDownload(r)} className="flex-1 py-3 bg-gradient-to-r from-amber-400 to-amber-500 dark:from-d-accent dark:to-d-accent-s text-white dark:text-d-card rounded-xl font-semibold hover:shadow-md dark:hover:shadow-[0_4px_20px_rgba(255,210,100,0.4)] transition-all flex items-center justify-center gap-2">
                                     <FiDownload size={18} />
                                     Download
                                 </button>

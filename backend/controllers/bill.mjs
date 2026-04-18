@@ -6,6 +6,7 @@ import Customer from "../models/customer.mjs";
 import Expense from "../models/expense.mjs";
 import StockMovement from "../models/stockMovement.mjs";
 import { recordCashEntry } from "./cashbook.mjs";
+import { startOfToday, startOfMonth, startOfWeek, endOfDay as endOfDayHelper, startOfDay, toLocalDateString, toLocalTimeString, getTimezone } from "../utils/dateHelpers.mjs";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -384,8 +385,8 @@ export const createBill = async (req, res) => {
                 // Meta
                 billName: req.body.billName || "",
                 notes: req.body.notes || "",
-                date: now.toISOString().slice(0, 10),
-                time: now.toTimeString().slice(0, 8),
+                date: toLocalDateString(now),
+                time: toLocalTimeString(now),
             });
 
             const saved = await bill.save({ session });
@@ -506,7 +507,7 @@ export const getAllBills = async (req, res) => {
 
         let bills;
         if (fetchAll) {
-            bills = await Bill.find(query).sort({ createdAt: -1 }).lean();
+            bills = await Bill.find(query).sort({ createdAt: -1 }).limit(5000).lean();
         } else {
             const skip = (page - 1) * limit;
             bills = await Bill.find(query)
@@ -627,6 +628,7 @@ export const deleteBill = async (req, res) => {
                         _id: null,
                         totalBilled: { $sum: "$total" },
                         totalPaid: { $sum: "$amountPaid" },
+                        balance: { $sum: "$amountDue" },
                         totalReturns: {
                             $sum: { $cond: [{ $ne: ["$returnStatus", "none"] }, 1, 0] }
                         },
@@ -641,7 +643,7 @@ export const deleteBill = async (req, res) => {
                 await Customer.findByIdAndUpdate(customerId, {
                     totalBilled: stats.totalBilled,
                     totalPaid: stats.totalPaid,
-                    balance: stats.totalBilled - stats.totalPaid,
+                    balance: stats.balance,
                     totalPurchases: stats.totalPurchases,
                     totalReturns: stats.totalReturns,
                     lastPurchase: stats.lastPurchase
@@ -759,8 +761,8 @@ export const holdBill = async (req, res) => {
                 holdAt: now,
                 billName: req.body.billName || "",
                 notes: req.body.notes || "",
-                date: now.toISOString().slice(0, 10),
-                time: now.toTimeString().slice(0, 8),
+                date: toLocalDateString(now),
+                time: toLocalTimeString(now),
             });
 
             const saved = await bill.save({ session });
@@ -1417,19 +1419,14 @@ export const lookupBillsByProduct = async (req, res) => {
  * POST /bills/standalone-refund
  * Create a standalone refund bill for a walk-in customer when the original
  * bill cannot be located (receiptless return). Creates a type:"refund" bill
- * with no originalBill link and negative-priced items. Admin-only.
+ * with no originalBill link and negative-priced items.
  *
  * Counts in sales reports as a separate "standalone refund" bucket so it
  * doesn't pollute linked return metrics.
  */
 export const createStandaloneRefund = async (req, res) => {
     try {
-        // Admin-only — standalone refunds bypass the normal audit trail
-        if (!req.user.adminId) {
-            return res.status(403).json({
-                message: "Only admins can process receiptless refunds",
-            });
-        }
+        // Permission check is handled by accessControl middleware (returns.standalone)
 
         const {
             items,
@@ -1437,7 +1434,6 @@ export const createStandaloneRefund = async (req, res) => {
             customerName = "Walk-in",
             customerPhone = "",
             notes = "",
-            restock = false,
         } = req.body;
 
         if (!items || items.length === 0) {
@@ -1458,16 +1454,15 @@ export const createStandaloneRefund = async (req, res) => {
             gst: 0,
         }));
 
-        const stockItems = restock
-            ? enriched
-                .filter((i) => i.product)
-                .map((i) => ({
-                    product: i.product,
-                    quantity: i.qty,
-                    name: i.name,
-                    price: i.price,
-                }))
-            : [];
+        // Always restock on standalone returns
+        const stockItems = enriched
+            .filter((i) => i.product)
+            .map((i) => ({
+                product: i.product,
+                quantity: i.qty,
+                name: i.name,
+                price: i.price,
+            }));
 
         const now = new Date();
         const session = await mongoose.startSession();
@@ -1494,8 +1489,8 @@ export const createStandaloneRefund = async (req, res) => {
                 customerName: customerName || "Walk-in",
                 customerPhone: customerPhone || "",
                 notes: notes || "Standalone refund (no original bill)",
-                date: now.toISOString().slice(0, 10),
-                time: now.toTimeString().slice(0, 8),
+                date: toLocalDateString(now),
+                time: toLocalTimeString(now),
             });
 
             // Track the refund method via payments array (negative since money leaves)
@@ -1525,6 +1520,24 @@ export const createStandaloneRefund = async (req, res) => {
                     },
                     session
                 );
+            }
+
+            // Record cash refund in cashbook
+            const totalRefundAmount = enriched.reduce((sum, i) => sum + Math.abs(i.price) * i.qty, 0);
+            if (refundMethod === "cash" && totalRefundAmount > 0) {
+                await recordCashEntry({
+                    type: "customer_refund",
+                    amount: totalRefundAmount,
+                    direction: "out",
+                    referenceType: "bill",
+                    referenceId: savedRefund._id,
+                    referenceNumber: `Standalone Refund (Bill #${savedRefund.billNumber})`,
+                    description: `Standalone cash refund - Bill #${savedRefund.billNumber}`,
+                    performedBy: req.user.name || "Admin",
+                    performedById: req.user.id,
+                    businessId: req.user.businessId,
+                    session,
+                });
             }
 
             await session.commitTransaction();
@@ -1704,12 +1717,49 @@ export const getBillStats = async (req, res) => {
             },
         ];
 
+        // ── Standalone refunds (type: "refund") ──────────────────
+        facets.todayStandaloneRefunds = [
+            { $match: { business: businessId, type: "refund", status: "completed", createdAt: { $gte: today } } },
+            { $unwind: "$payments" },
+            {
+                $group: {
+                    _id: "$payments.method",
+                    amount: { $sum: { $abs: "$payments.amount" } },
+                    count: { $sum: 1 },
+                },
+            },
+        ];
+        facets.periodStandaloneRefunds = [
+            { $match: { business: businessId, type: "refund", status: "completed", createdAt: { $gte: periodStart } } },
+            { $unwind: "$payments" },
+            {
+                $group: {
+                    _id: "$payments.method",
+                    amount: { $sum: { $abs: "$payments.amount" } },
+                    count: { $sum: 1 },
+                },
+            },
+        ];
+
+        // COGS of items still with customers (sold qty minus returned qty)
+        facets.periodNetCogs = [
+            { $match: { business: businessId, type: "sale", status: "completed", createdAt: { $gte: periodStart } } },
+            { $unwind: "$items" },
+            {
+                $group: {
+                    _id: null,
+                    netCogs: { $sum: { $multiply: ["$items.costPrice", { $subtract: ["$items.qty", { $ifNull: ["$items.returnedQty", 0] }] }] } },
+                },
+            },
+        ];
+
         // Chart data
         if (includeChart) {
+            const tz = getTimezone();
             const chartGroupBy =
                 filter === "today"
-                    ? { $hour: "$createdAt" }
-                    : { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } };
+                    ? { $hour: { date: "$createdAt", timezone: tz } }
+                    : { $dateToString: { format: "%Y-%m-%d", date: "$createdAt", timezone: tz } };
 
             facets.chartData = [
                 { $match: { business: businessId, createdAt: { $gte: periodStart }, ...saleMatch } },
@@ -1757,12 +1807,27 @@ export const getBillStats = async (req, res) => {
             }
             return out;
         };
-        const periodRefunds = _parseRefunds(facetResult.periodRefundBreakdown);
-        const todayRefunds = _parseRefunds(facetResult.todayRefundBreakdown);
+        // Merge linked returns + standalone refunds
+        const _mergeRefunds = (linked, standalone) => {
+            const merged = _parseRefunds(linked);
+            for (const r of standalone || []) {
+                if (r._id === "cash") merged.cashRefund += r.amount;
+                else if (r._id === "card") merged.cardRefund += r.amount;
+                else if (r._id === "ledger_adjust") merged.ledgerAdjust += r.amount;
+                else if (r._id === "store_credit") merged.storeCreditRefund += r.amount;
+                merged.total += r.amount;
+            }
+            return merged;
+        };
+        const periodRefunds = _mergeRefunds(facetResult.periodRefundBreakdown, facetResult.periodStandaloneRefunds);
+        const todayRefunds = _mergeRefunds(facetResult.todayRefundBreakdown, facetResult.todayStandaloneRefunds);
 
         // Use refund breakdown total (filters by returns.returnedAt) instead of
         // period.totalRefunded (which only counts bills created in the period)
         const periodTotalRefunded = periodRefunds.total;
+
+        // COGS of items still with customers (directly computed from item data)
+        const adjustedCogs = facetResult.periodNetCogs?.[0]?.netCogs || 0;
         const netRevenue = period.grossRevenue - periodTotalRefunded;
         const avgOrderValue = period.totalOrders > 0 ? period.grossRevenue / period.totalOrders : 0;
         const profitMargin = netRevenue > 0 ? (period.netProfit / netRevenue) * 100 : 0;
@@ -1825,6 +1890,7 @@ export const getBillStats = async (req, res) => {
             // P&L
             netRevenue,
             totalCost: period.totalCost,
+            adjustedCogs,
             grossProfit: period.totalProfit,
             netProfit: period.netProfit,
             profitMargin,
@@ -2076,12 +2142,8 @@ export const addPayment = async (req, res) => {
     }
 };
 
-// ─── Helper: parse endDate to end-of-day so the full day is included ─────
-const endOfDay = (dateStr) => {
-    const d = new Date(dateStr);
-    d.setHours(23, 59, 59, 999);
-    return d;
-};
+// Use shared endOfDay helper (imported as endOfDayHelper) for timezone-correct parsing
+const endOfDay = endOfDayHelper;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // SALES BY PRODUCT (date range)
@@ -2105,7 +2167,7 @@ export const salesByProduct = async (req, res) => {
 
         if (startDate || endDate) {
             match.createdAt = {};
-            if (startDate) match.createdAt.$gte = new Date(startDate);
+            if (startDate) match.createdAt.$gte = startOfDay(startDate);
             if (endDate) match.createdAt.$lte = endOfDay(endDate);
         }
 
@@ -2201,7 +2263,7 @@ export const profitReport = async (req, res) => {
         let periodStart, periodEnd;
 
         if (startDate && endDate) {
-            periodStart = new Date(startDate);
+            periodStart = startOfDay(startDate);
             periodEnd = endOfDay(endDate);
         } else {
             switch (filter) {
@@ -2228,8 +2290,8 @@ export const profitReport = async (req, res) => {
 
         const dateMatch = { $gte: periodStart, $lte: periodEnd };
 
-        // Sales aggregation
-        const [salesResult, expenseResult] = await Promise.all([
+        // Sales aggregation + standalone refunds
+        const [salesResult, standaloneRefundResult, netCogsResult, expenseResult] = await Promise.all([
             Bill.aggregate([
                 {
                     $match: {
@@ -2254,6 +2316,42 @@ export const profitReport = async (req, res) => {
                         netProfit: { $sum: "$netProfit" },
                         totalOrders: { $sum: 1 },
                         totalItems: { $sum: "$totalQty" },
+                    },
+                },
+            ]),
+            // Standalone refund totals
+            Bill.aggregate([
+                {
+                    $match: {
+                        business: businessId,
+                        type: "refund",
+                        status: "completed",
+                        createdAt: dateMatch,
+                    },
+                },
+                {
+                    $group: {
+                        _id: null,
+                        totalRefunded: { $sum: { $abs: "$total" } },
+                        count: { $sum: 1 },
+                    },
+                },
+            ]),
+            // COGS of items still with customers (sale items: costPrice × (qty - returnedQty))
+            Bill.aggregate([
+                {
+                    $match: {
+                        business: businessId,
+                        type: "sale",
+                        status: "completed",
+                        createdAt: dateMatch,
+                    },
+                },
+                { $unwind: "$items" },
+                {
+                    $group: {
+                        _id: null,
+                        netCogs: { $sum: { $multiply: ["$items.costPrice", { $subtract: ["$items.qty", { $ifNull: ["$items.returnedQty", 0] }] }] } },
                     },
                 },
             ]),
@@ -2300,11 +2398,16 @@ export const profitReport = async (req, res) => {
             totalRefunded: 0, returnedProfit: 0, netProfit: 0,
             totalOrders: 0, totalItems: 0,
         };
+        const standaloneRefunds = standaloneRefundResult[0] || { totalRefunded: 0, count: 0 };
+        const adjustedCogs = netCogsResult[0]?.netCogs || 0;
         const totalExpenses = expenseResult[0]?.totalExpenses || 0;
 
-        // True net profit = sales net profit - operating expenses
-        const trueNetProfit = sales.netProfit - totalExpenses;
+        // Include standalone refunds in totals
+        sales.totalRefunded += standaloneRefunds.totalRefunded;
+
+        // Net Revenue - COGS of kept items - Expenses = Net Profit
         const revenueAfterReturns = sales.netRevenue - sales.totalRefunded;
+        const trueNetProfit = revenueAfterReturns - adjustedCogs - totalExpenses;
         const profitMargin = revenueAfterReturns > 0
             ? Math.round((trueNetProfit / revenueAfterReturns) * 10000) / 100
             : 0;
@@ -2323,6 +2426,7 @@ export const profitReport = async (req, res) => {
 
             // Cost & Profit
             totalCost: sales.totalCost,
+            adjustedCogs,
             grossProfit: sales.grossProfit,
             returnedProfit: sales.returnedProfit,
             salesNetProfit: sales.netProfit,
@@ -2360,7 +2464,7 @@ export const salesByCategory = async (req, res) => {
         };
         if (startDate || endDate) {
             match.createdAt = {};
-            if (startDate) match.createdAt.$gte = new Date(startDate);
+            if (startDate) match.createdAt.$gte = startOfDay(startDate);
             if (endDate) match.createdAt.$lte = endOfDay(endDate);
         }
 
@@ -2425,7 +2529,7 @@ export const salesByCashier = async (req, res) => {
         };
         if (startDate || endDate) {
             match.createdAt = {};
-            if (startDate) match.createdAt.$gte = new Date(startDate);
+            if (startDate) match.createdAt.$gte = startOfDay(startDate);
             if (endDate) match.createdAt.$lte = endOfDay(endDate);
         }
 
@@ -2484,7 +2588,7 @@ export const paymentMethodReport = async (req, res) => {
         };
         if (startDate || endDate) {
             match.createdAt = {};
-            if (startDate) match.createdAt.$gte = new Date(startDate);
+            if (startDate) match.createdAt.$gte = startOfDay(startDate);
             if (endDate) match.createdAt.$lte = endOfDay(endDate);
         }
 
@@ -2530,7 +2634,7 @@ export const taxReport = async (req, res) => {
         };
         if (startDate || endDate) {
             match.createdAt = {};
-            if (startDate) match.createdAt.$gte = new Date(startDate);
+            if (startDate) match.createdAt.$gte = startOfDay(startDate);
             if (endDate) match.createdAt.$lte = endOfDay(endDate);
         }
 
@@ -2620,7 +2724,7 @@ export const customerSalesReport = async (req, res) => {
         };
         if (startDate || endDate) {
             match.createdAt = {};
-            if (startDate) match.createdAt.$gte = new Date(startDate);
+            if (startDate) match.createdAt.$gte = startOfDay(startDate);
             if (endDate) match.createdAt.$lte = endOfDay(endDate);
         }
 
@@ -2700,7 +2804,7 @@ export const discountReport = async (req, res) => {
         };
         if (startDate || endDate) {
             match.createdAt = {};
-            if (startDate) match.createdAt.$gte = new Date(startDate);
+            if (startDate) match.createdAt.$gte = startOfDay(startDate);
             if (endDate) match.createdAt.$lte = endOfDay(endDate);
         }
 
@@ -2794,7 +2898,7 @@ export const returnAnalysis = async (req, res) => {
         };
         if (startDate || endDate) {
             match.createdAt = {};
-            if (startDate) match.createdAt.$gte = new Date(startDate);
+            if (startDate) match.createdAt.$gte = startOfDay(startDate);
             if (endDate) match.createdAt.$lte = endOfDay(endDate);
         }
 
@@ -2890,17 +2994,18 @@ export const salesTimeline = async (req, res) => {
 
         if (startDate || endDate) {
             match.createdAt = {};
-            if (startDate) match.createdAt.$gte = new Date(startDate);
+            if (startDate) match.createdAt.$gte = startOfDay(startDate);
             if (endDate) match.createdAt.$lte = endOfDay(endDate);
         }
 
+        const tz = getTimezone();
         let dateGroup;
         if (groupBy === "month") {
-            dateGroup = { year: { $year: "$createdAt" }, month: { $month: "$createdAt" } };
+            dateGroup = { year: { $year: { date: "$createdAt", timezone: tz } }, month: { $month: { date: "$createdAt", timezone: tz } } };
         } else if (groupBy === "week") {
-            dateGroup = { year: { $isoWeekYear: "$createdAt" }, week: { $isoWeek: "$createdAt" } };
+            dateGroup = { year: { $isoWeekYear: { date: "$createdAt", timezone: tz } }, week: { $isoWeek: { date: "$createdAt", timezone: tz } } };
         } else {
-            dateGroup = { year: { $year: "$createdAt" }, month: { $month: "$createdAt" }, day: { $dayOfMonth: "$createdAt" } };
+            dateGroup = { year: { $year: { date: "$createdAt", timezone: tz } }, month: { $month: { date: "$createdAt", timezone: tz } }, day: { $dayOfMonth: { date: "$createdAt", timezone: tz } } };
         }
 
         const results = await Bill.aggregate([

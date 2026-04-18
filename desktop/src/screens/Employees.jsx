@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { todayLocalDate, toLocalDateStr } from '../utils/date';
 import { useBusiness } from '../context/BusinessContext';
 import { getEmployees, getEmployeePrefix, createEmployee, updateEmployee, deleteEmployee } from '../services/api/employees';
 import { getEmployeeAccess, updateEmployeeAccess } from '../services/api/access';
@@ -40,7 +41,7 @@ const DAYS_OF_WEEK = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 's
 // Access control module definitions
 const ACCESS_MODULES = [
     { key: 'pos', label: 'POS / Sales', actions: ['view', 'create'] },
-    { key: 'returns', label: 'Returns', actions: ['view', 'create', 'cancel'] },
+    { key: 'returns', label: 'Returns', actions: ['view', 'create', 'standalone', 'cancel'] },
     { key: 'products', label: 'Products', actions: ['view', 'create', 'edit', 'delete', 'updateStock'] },
     { key: 'vendors', label: 'Vendors', actions: ['view', 'create', 'edit', 'delete', 'pay'] },
     { key: 'supplies', label: 'Supplies', actions: ['view', 'create', 'edit', 'delete', 'recordPayment', 'processReturn'] },
@@ -54,7 +55,7 @@ const ACCESS_MODULES = [
 
 const ACTION_LABELS = {
     view: 'View', create: 'Create', edit: 'Edit', delete: 'Delete',
-    updateStock: 'Update Stock', pay: 'Pay', recordPayment: 'Record Payment',
+    standalone: 'Standalone', updateStock: 'Update Stock', pay: 'Pay', recordPayment: 'Record Payment',
     processReturn: 'Process Return', approve: 'Approve', resetPassword: 'Reset Password',
     resume: 'Resume', cancel: 'Cancel',
 };
@@ -88,7 +89,7 @@ const Employees = () => {
         status: 'active',
         isManager: false,
         salary: '',
-        joiningDate: new Date().toISOString().split('T')[0],
+        joiningDate: todayLocalDate(),
         workingHoursStart: '09:00',
         workingHoursEnd: '18:00',
         daysOff: [],
@@ -117,7 +118,7 @@ const Employees = () => {
             const res = await getEmployeePrefix();
             setPrefix(res.data?.prefix || 'emp@');
         } catch (error) {
-            console.log('Using default prefix');
+            // fallback handled by default state
         }
     };
 
@@ -160,7 +161,7 @@ const Employees = () => {
                 isManager: employee.role === 'manager',
                 salary: employee.salary || '',
                 joiningDate: employee.joiningDate
-                    ? new Date(employee.joiningDate).toISOString().split('T')[0]
+                    ? toLocalDateStr(employee.joiningDate)
                     : '',
                 workingHoursStart: employee.workingHours?.start || '09:00',
                 workingHoursEnd: employee.workingHours?.end || '18:00',
@@ -180,7 +181,7 @@ const Employees = () => {
                 status: 'active',
                 isManager: false,
                 salary: '',
-                joiningDate: new Date().toISOString().split('T')[0],
+                joiningDate: todayLocalDate(),
                 workingHoursStart: '09:00',
                 workingHoursEnd: '18:00',
                 daysOff: [],

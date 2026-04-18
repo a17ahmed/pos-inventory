@@ -1,5 +1,6 @@
 import Admin from '../models/admin.mjs';
 import Business from '../models/business.mjs';
+import bcrypt from 'bcrypt';
 
 // GET ADMIN - only the admin's own profile
 const getAdmin = async (req, res) => {
@@ -143,4 +144,36 @@ const getBusinessSettings = async (req, res) => {
     }
 };
 
-export { getAdmin, getAdminEmail, patchAdmin, deleteAdmin, updateBusinessSettings, getBusinessSettings };
+// CHANGE PASSWORD - admin changes their own password
+const changePassword = async (req, res) => {
+    try {
+        const id = req.user.adminId;
+        const { currentPassword, newPassword } = req.body;
+
+        if (!currentPassword || !newPassword) {
+            return res.status(400).json({ message: 'Current and new password are required' });
+        }
+        if (newPassword.length < 8) {
+            return res.status(400).json({ message: 'New password must be at least 8 characters' });
+        }
+
+        const admin = await Admin.findById(id);
+        if (!admin) {
+            return res.status(404).json({ message: 'Admin not found' });
+        }
+
+        const isMatch = await bcrypt.compare(currentPassword, admin.password);
+        if (!isMatch) {
+            return res.status(401).json({ message: 'Current password is incorrect' });
+        }
+
+        admin.password = await bcrypt.hash(newPassword, 10);
+        await admin.save();
+
+        res.json({ message: 'Password changed successfully' });
+    } catch (error) {
+        res.status(500).json({ message: 'Error changing password' });
+    }
+};
+
+export { getAdmin, getAdminEmail, patchAdmin, deleteAdmin, updateBusinessSettings, getBusinessSettings, changePassword };

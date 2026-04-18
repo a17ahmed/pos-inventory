@@ -56,7 +56,7 @@ const CustomerLedger = () => {
     });
     const [submittingPayment, setSubmittingPayment] = useState(false);
 
-    const currency = business?.currency || 'PKR';
+    const currency = business?.currency || 'Rs.';
     const formatCurrency = (amount) =>
         `${currency} ${Math.abs(amount || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
 

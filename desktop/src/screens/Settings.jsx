@@ -2,11 +2,10 @@ import React, { useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useBusiness } from '../context/BusinessContext';
-import { updateBusiness } from '../services/api/business';
+import { updateBusiness, updateAdmin, changeAdminPassword } from '../services/api/business';
 import { useTheme } from '../context/ThemeContext';
 import {
     FiUser,
-    FiServer,
     FiLogOut,
     FiBriefcase,
     FiChevronRight,
@@ -35,8 +34,11 @@ const Settings = () => {
     const { isDark, toggleTheme } = useTheme();
 
     const [activeModal, setActiveModal] = useState(null);
-    const [serverUrl, setServerUrl] = useState(import.meta.env.VITE_API_URL || 'http://localhost:3000');
     const [savingBusiness, setSavingBusiness] = useState(false);
+    const [savingProfile, setSavingProfile] = useState(false);
+    const [profileForm, setProfileForm] = useState({ name: '', email: '', phone: '' });
+    const [passwordForm, setPasswordForm] = useState({ currentPassword: '', newPassword: '', confirmPassword: '' });
+    const [savingPassword, setSavingPassword] = useState(false);
     const bizFormRef = useRef({});
 
     const handleSaveBusiness = async () => {
@@ -53,6 +55,20 @@ const Settings = () => {
         }
     };
 
+    const handleSaveProfile = async () => {
+        setSavingProfile(true);
+        try {
+            const id = user?.id || user?._id;
+            await updateAdmin(id, profileForm);
+            setActiveModal(null);
+            window.location.reload();
+        } catch (err) {
+            alert('Failed to save: ' + (err.response?.data?.message || err.message));
+        } finally {
+            setSavingProfile(false);
+        }
+    };
+
     const handleLogout = async () => {
         if (window.confirm('Are you sure you want to logout?')) {
             await logout();
@@ -60,18 +76,40 @@ const Settings = () => {
         }
     };
 
-    const handleSaveServer = () => {
-        setActiveModal(null);
-        alert('Server URL is configured via .env file (VITE_API_URL). Restart the app after changing it.');
+
+    const handleChangePassword = async () => {
+        if (!passwordForm.currentPassword || !passwordForm.newPassword) {
+            return alert('Please fill in all fields');
+        }
+        if (passwordForm.newPassword.length < 8) {
+            return alert('New password must be at least 8 characters');
+        }
+        if (passwordForm.newPassword !== passwordForm.confirmPassword) {
+            return alert('New passwords do not match');
+        }
+        setSavingPassword(true);
+        try {
+            await changeAdminPassword({
+                currentPassword: passwordForm.currentPassword,
+                newPassword: passwordForm.newPassword,
+            });
+            alert('Password changed successfully');
+            setPasswordForm({ currentPassword: '', newPassword: '', confirmPassword: '' });
+            setActiveModal(null);
+        } catch (err) {
+            alert(err.response?.data?.message || 'Failed to change password');
+        } finally {
+            setSavingPassword(false);
+        }
     };
 
     // Setting item component
     const SettingItem = ({ icon: Icon, label, value, onClick, color = 'text-slate-600', danger = false, rightElement = null }) => (
-        <button
+        <div
             onClick={onClick}
-            className={`w-full flex items-center gap-4 px-4 py-4 hover:bg-slate-50 dark:hover:bg-d-glass-hover transition-colors ${
-                danger ? 'text-red-500' : ''
-            }`}
+            className={`w-full flex items-center gap-4 px-4 py-4 transition-colors ${
+                onClick ? 'cursor-pointer hover:bg-slate-50 dark:hover:bg-d-glass-hover' : 'cursor-default'
+            } ${danger ? 'text-red-500' : ''}`}
         >
             <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${
                 danger ? 'bg-red-100 dark:bg-red-900/30' : 'bg-slate-100 dark:bg-d-elevated'
@@ -82,8 +120,8 @@ const Settings = () => {
                 <p className={`font-medium ${danger ? 'text-red-500 dark:text-d-red' : 'text-slate-800 dark:text-d-heading'}`}>{label}</p>
                 {value && <p className="text-sm text-slate-500 dark:text-d-muted">{value}</p>}
             </div>
-            {rightElement || <FiChevronRight size={20} className="text-slate-400 dark:text-d-muted" />}
-        </button>
+            {rightElement || (onClick ? <FiChevronRight size={20} className="text-slate-400 dark:text-d-muted" /> : null)}
+        </div>
     );
 
     // Section component
@@ -122,7 +160,7 @@ const Settings = () => {
                         </span>
                     </div>
                     <button
-                        onClick={() => setActiveModal('profile')}
+                        onClick={() => { setProfileForm({ name: user?.name || '', email: user?.email || '', phone: user?.phone || '' }); setActiveModal('profile'); }}
                         className="px-4 py-2 text-primary-500 dark:text-primary-400 hover:bg-primary-50 dark:hover:bg-primary-900/20 rounded-xl font-medium transition-colors"
                     >
                         Edit
@@ -179,24 +217,15 @@ const Settings = () => {
                     }
                 />
                 <SettingItem
-                    icon={FiServer}
-                    label="Server Configuration"
-                    value={import.meta.env.VITE_API_URL || 'http://localhost:3000'}
-                    onClick={() => setActiveModal('server')}
-                    color="text-orange-500"
-                />
-                <SettingItem
                     icon={FiBell}
                     label="Notifications"
-                    value="Manage alerts"
-                    onClick={() => {}}
+                    value="Coming soon"
                     color="text-pink-500"
                 />
                 <SettingItem
                     icon={FiDatabase}
                     label="Data & Storage"
-                    value="Clear cache, export data"
-                    onClick={() => {}}
+                    value="Coming soon"
                     color="text-cyan-500"
                 />
             </Section>
@@ -207,14 +236,16 @@ const Settings = () => {
                     icon={FiLock}
                     label="Change Password"
                     value="Update your password"
-                    onClick={() => {}}
+                    onClick={() => {
+                        setPasswordForm({ currentPassword: '', newPassword: '', confirmPassword: '' });
+                        setActiveModal('password');
+                    }}
                     color="text-amber-500"
                 />
                 <SettingItem
                     icon={FiShield}
                     label="Security Settings"
-                    value="Two-factor authentication"
-                    onClick={() => {}}
+                    value="Coming soon"
                     color="text-emerald-500"
                 />
             </Section>
@@ -224,8 +255,7 @@ const Settings = () => {
                 <SettingItem
                     icon={FiHelpCircle}
                     label="Help & Support"
-                    value="FAQs, contact us"
-                    onClick={() => {}}
+                    value="Coming soon"
                     color="text-blue-500"
                 />
                 <SettingItem
@@ -273,7 +303,8 @@ const Settings = () => {
                                 <label className="block text-sm font-medium text-slate-700 dark:text-d-text mb-1">Full Name</label>
                                 <input
                                     type="text"
-                                    defaultValue={user?.name}
+                                    value={profileForm.name}
+                                    onChange={e => setProfileForm(p => ({ ...p, name: e.target.value }))}
                                     className="w-full px-4 py-3 border border-slate-200 dark:border-d-border rounded-xl focus:ring-2 focus:ring-primary-500 bg-white dark:bg-d-elevated text-slate-800 dark:text-d-heading"
                                 />
                             </div>
@@ -281,15 +312,17 @@ const Settings = () => {
                                 <label className="block text-sm font-medium text-slate-700 dark:text-d-text mb-1">Email</label>
                                 <input
                                     type="email"
-                                    defaultValue={user?.email}
-                                    className="w-full px-4 py-3 border border-slate-200 dark:border-d-border rounded-xl focus:ring-2 focus:ring-primary-500 bg-white dark:bg-d-elevated text-slate-800 dark:text-d-heading"
+                                    value={profileForm.email}
+                                    disabled
+                                    className="w-full px-4 py-3 border border-slate-200 dark:border-d-border rounded-xl bg-slate-100 dark:bg-d-card text-slate-500 dark:text-d-muted cursor-not-allowed"
                                 />
                             </div>
                             <div>
                                 <label className="block text-sm font-medium text-slate-700 dark:text-d-text mb-1">Phone</label>
                                 <input
                                     type="tel"
-                                    defaultValue={user?.phone}
+                                    value={profileForm.phone}
+                                    onChange={e => setProfileForm(p => ({ ...p, phone: e.target.value }))}
                                     className="w-full px-4 py-3 border border-slate-200 dark:border-d-border rounded-xl focus:ring-2 focus:ring-primary-500 bg-white dark:bg-d-elevated text-slate-800 dark:text-d-heading"
                                 />
                             </div>
@@ -300,9 +333,13 @@ const Settings = () => {
                                 >
                                     Cancel
                                 </button>
-                                <button className="flex-1 py-3 bg-primary-500 text-white rounded-xl font-medium hover:bg-primary-600 flex items-center justify-center gap-2">
+                                <button
+                                    onClick={handleSaveProfile}
+                                    disabled={savingProfile}
+                                    className="flex-1 py-3 bg-primary-500 text-white rounded-xl font-medium hover:bg-primary-600 flex items-center justify-center gap-2 disabled:opacity-50"
+                                >
                                     <FiSave size={18} />
-                                    Save
+                                    {savingProfile ? 'Saving...' : 'Save'}
                                 </button>
                             </div>
                         </div>
@@ -431,61 +468,6 @@ const Settings = () => {
                 </div>
             )}
 
-            {/* Server Modal */}
-            {activeModal === 'server' && (
-                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-                    <div className="bg-white dark:bg-d-card rounded-2xl w-full max-w-lg animate-fadeIn">
-                        <div className="flex items-center justify-between p-6 border-b border-slate-200 dark:border-d-border">
-                            <h3 className="text-xl font-semibold text-slate-800 dark:text-d-heading">Server Configuration</h3>
-                            <button
-                                onClick={() => setActiveModal(null)}
-                                className="p-2 hover:bg-slate-100 dark:hover:bg-d-glass-hover rounded-lg transition-colors text-slate-600 dark:text-d-text"
-                            >
-                                <FiX />
-                            </button>
-                        </div>
-                        <div className="p-6 space-y-4">
-                            <div className="p-4 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-xl">
-                                <p className="text-sm text-yellow-700 dark:text-d-accent">
-                                    <strong>Note:</strong> Changing the server URL requires restarting the application.
-                                </p>
-                            </div>
-                            <div>
-                                <label className="block text-sm font-medium text-slate-700 dark:text-d-text mb-1">
-                                    <FiServer className="inline mr-2" size={14} />
-                                    API Server URL
-                                </label>
-                                <input
-                                    type="text"
-                                    value={serverUrl}
-                                    onChange={(e) => setServerUrl(e.target.value)}
-                                    placeholder="http://192.168.100.26:3000"
-                                    className="w-full px-4 py-3 border border-slate-200 dark:border-d-border rounded-xl focus:ring-2 focus:ring-primary-500 bg-white dark:bg-d-elevated text-slate-800 dark:text-d-heading"
-                                />
-                            </div>
-                            <div className="flex items-center gap-3 p-4 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-xl">
-                                <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse" />
-                                <span className="text-green-700 dark:text-d-green font-medium">Connected to server</span>
-                            </div>
-                            <div className="flex gap-3 pt-4">
-                                <button
-                                    onClick={() => setActiveModal(null)}
-                                    className="flex-1 py-3 border border-slate-200 dark:border-d-border rounded-xl font-medium text-slate-600 dark:text-d-text hover:bg-slate-50 dark:hover:bg-d-glass-hover"
-                                >
-                                    Cancel
-                                </button>
-                                <button
-                                    onClick={handleSaveServer}
-                                    className="flex-1 py-3 bg-primary-500 text-white rounded-xl font-medium hover:bg-primary-600 flex items-center justify-center gap-2"
-                                >
-                                    <FiSave size={18} />
-                                    Save
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            )}
 
             {/* About Modal */}
             {activeModal === 'about' && (
@@ -510,6 +492,69 @@ const Settings = () => {
                             >
                                 Close
                             </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Change Password Modal */}
+            {activeModal === 'password' && (
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+                    <div className="bg-white dark:bg-d-card rounded-2xl w-full max-w-lg animate-fadeIn">
+                        <div className="flex items-center justify-between p-6 border-b border-slate-200 dark:border-d-border">
+                            <h3 className="text-xl font-semibold text-slate-800 dark:text-d-heading">Change Password</h3>
+                            <button
+                                onClick={() => setActiveModal(null)}
+                                className="p-2 hover:bg-slate-100 dark:hover:bg-d-glass-hover rounded-lg transition-colors text-slate-600 dark:text-d-text"
+                            >
+                                <FiX />
+                            </button>
+                        </div>
+                        <div className="p-6 space-y-4">
+                            <div>
+                                <label className="block text-sm font-medium text-slate-700 dark:text-d-text mb-1">Current Password</label>
+                                <input
+                                    type="password"
+                                    value={passwordForm.currentPassword}
+                                    onChange={e => setPasswordForm(p => ({ ...p, currentPassword: e.target.value }))}
+                                    className="w-full px-4 py-3 border border-slate-200 dark:border-d-border rounded-xl focus:ring-2 focus:ring-primary-500 bg-white dark:bg-d-elevated text-slate-800 dark:text-d-heading"
+                                />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-slate-700 dark:text-d-text mb-1">New Password</label>
+                                <input
+                                    type="password"
+                                    value={passwordForm.newPassword}
+                                    onChange={e => setPasswordForm(p => ({ ...p, newPassword: e.target.value }))}
+                                    className="w-full px-4 py-3 border border-slate-200 dark:border-d-border rounded-xl focus:ring-2 focus:ring-primary-500 bg-white dark:bg-d-elevated text-slate-800 dark:text-d-heading"
+                                />
+                                <p className="text-xs text-slate-400 dark:text-d-muted mt-1">Minimum 8 characters</p>
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-slate-700 dark:text-d-text mb-1">Confirm New Password</label>
+                                <input
+                                    type="password"
+                                    value={passwordForm.confirmPassword}
+                                    onChange={e => setPasswordForm(p => ({ ...p, confirmPassword: e.target.value }))}
+                                    className="w-full px-4 py-3 border border-slate-200 dark:border-d-border rounded-xl focus:ring-2 focus:ring-primary-500 bg-white dark:bg-d-elevated text-slate-800 dark:text-d-heading"
+                                />
+                            </div>
+                            <div className="flex gap-3 pt-4">
+                                <button
+                                    onClick={() => setActiveModal(null)}
+                                    className="flex-1 py-3 border border-slate-200 dark:border-d-border rounded-xl font-medium text-slate-600 dark:text-d-text hover:bg-slate-50 dark:hover:bg-d-glass-hover"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    onClick={handleChangePassword}
+                                    disabled={savingPassword}
+                                    className="flex-1 py-3 bg-primary-500 text-white rounded-xl font-medium hover:bg-primary-600 flex items-center justify-center gap-2 disabled:opacity-50"
+                                >
+                                    <FiSave size={18} />
+                                    {savingPassword ? 'Changing...' : 'Change Password'}
+                                </button>
+                            </div>
                         </div>
                     </div>
                 </div>

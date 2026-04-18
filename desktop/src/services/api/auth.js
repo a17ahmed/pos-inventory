@@ -11,3 +11,6 @@ export const logout = (refreshToken) =>
 
 export const refreshToken = (token) =>
     api.post('/auth/refresh', { refreshToken: token });
+
+export const employeeChangePassword = (data) =>
+    api.post('/employeeAuth/change-password', data);

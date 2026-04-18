@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { todayLocalDate, toLocalDateStr } from '../utils/date';
 import { useBusiness } from '../context/BusinessContext';
 import { getExpenses, createExpense, updateExpense, deleteExpense, approveExpense, rejectExpense } from '../services/api/expenses';
 import {
@@ -40,11 +41,12 @@ const Expenses = () => {
     const [statusFilter, setStatusFilter] = useState('all');
     const [showModal, setShowModal] = useState(false);
     const [editingExpense, setEditingExpense] = useState(null);
+    const [rejectModal, setRejectModal] = useState({ show: false, expenseId: null, reason: '' });
     const [formData, setFormData] = useState({
         category: 'supplies',
         amount: '',
         description: '',
-        date: new Date().toISOString().split('T')[0],
+        date: todayLocalDate(),
         paymentMethod: 'cash',
         notes: '',
     });
@@ -90,8 +92,8 @@ const Expenses = () => {
                 amount: expense.amount || '',
                 description: expense.description || '',
                 date: expense.date
-                    ? new Date(expense.date).toISOString().split('T')[0]
-                    : new Date().toISOString().split('T')[0],
+                    ? toLocalDateStr(expense.date)
+                    : todayLocalDate(),
                 paymentMethod: expense.paymentMethod || 'cash',
                 notes: expense.notes || '',
             });
@@ -101,7 +103,7 @@ const Expenses = () => {
                 category: 'supplies',
                 amount: '',
                 description: '',
-                date: new Date().toISOString().split('T')[0],
+                date: todayLocalDate(),
                 paymentMethod: 'cash',
                 notes: '',
             });
@@ -111,10 +113,17 @@ const Expenses = () => {
 
     const handleSubmit = async (e) => {
         e.preventDefault();
+        const amount = Number(formData.amount);
+        if (!amount || amount <= 0) {
+            return alert('Please enter a valid amount');
+        }
+        if (!formData.description?.trim()) {
+            return alert('Please enter a description');
+        }
         try {
             const data = {
                 ...formData,
-                amount: Number(formData.amount),
+                amount,
             };
 
             if (editingExpense) {
@@ -141,12 +150,13 @@ const Expenses = () => {
         }
     };
 
-    const handleReject = async (expenseId) => {
-        const reason = window.prompt('Rejection reason:');
-        if (!reason) return;
-
+    const handleReject = async () => {
+        if (!rejectModal.reason?.trim()) {
+            return alert('Please enter a rejection reason');
+        }
         try {
-            await rejectExpense(expenseId, reason);
+            await rejectExpense(rejectModal.expenseId, rejectModal.reason);
+            setRejectModal({ show: false, expenseId: null, reason: '' });
             fetchExpenses();
         } catch (error) {
             console.error('Error rejecting expense:', error);
@@ -167,7 +177,7 @@ const Expenses = () => {
     };
 
     const formatCurrency = (amount) => {
-        return `${business?.currency || 'PKR'} ${(amount || 0).toLocaleString()}`;
+        return `${business?.currency || 'Rs.'} ${(amount || 0).toLocaleString()}`;
     };
 
     const getStatusBadge = (status) => {
@@ -355,7 +365,7 @@ const Expenses = () => {
                                                         <FiCheck />
                                                     </button>
                                                     <button
-                                                        onClick={() => handleReject(expense._id)}
+                                                        onClick={() => setRejectModal({ show: true, expenseId: expense._id, reason: '' })}
                                                         className="p-2 text-red-500 dark:text-d-red hover:bg-red-50 dark:hover:bg-[rgba(255,107,107,0.1)] rounded-lg transition-colors"
                                                         title="Reject"
                                                     >
@@ -521,6 +531,48 @@ const Expenses = () => {
                                 </button>
                             </div>
                         </form>
+                    </div>
+                </div>
+            )}
+            {/* Reject Reason Modal */}
+            {rejectModal.show && (
+                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+                    <div className="bg-white dark:bg-d-card rounded-2xl w-full max-w-md animate-fadeIn">
+                        <div className="flex items-center justify-between p-6 border-b border-slate-200 dark:border-d-border">
+                            <h3 className="text-lg font-semibold text-slate-800 dark:text-d-heading">Reject Expense</h3>
+                            <button
+                                onClick={() => setRejectModal({ show: false, expenseId: null, reason: '' })}
+                                className="p-2 hover:bg-slate-100 dark:hover:bg-d-glass-hover rounded-lg text-slate-600 dark:text-d-text"
+                            >
+                                <FiX />
+                            </button>
+                        </div>
+                        <div className="p-6 space-y-4">
+                            <div>
+                                <label className="block text-sm font-medium text-slate-700 dark:text-d-text mb-1">Rejection Reason</label>
+                                <textarea
+                                    value={rejectModal.reason}
+                                    onChange={e => setRejectModal(prev => ({ ...prev, reason: e.target.value }))}
+                                    placeholder="Enter reason for rejection..."
+                                    rows={3}
+                                    className="w-full px-4 py-3 border border-slate-200 dark:border-d-border rounded-xl focus:ring-2 focus:ring-red-500 bg-white dark:bg-d-elevated text-slate-800 dark:text-d-heading resize-none"
+                                />
+                            </div>
+                            <div className="flex gap-3">
+                                <button
+                                    onClick={() => setRejectModal({ show: false, expenseId: null, reason: '' })}
+                                    className="flex-1 py-3 border border-slate-200 dark:border-d-border rounded-xl font-medium text-slate-600 dark:text-d-text hover:bg-slate-50 dark:hover:bg-d-glass-hover"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    onClick={handleReject}
+                                    className="flex-1 py-3 bg-red-500 text-white rounded-xl font-medium hover:bg-red-600"
+                                >
+                                    Reject
+                                </button>
+                            </div>
+                        </div>
                     </div>
                 </div>
             )}

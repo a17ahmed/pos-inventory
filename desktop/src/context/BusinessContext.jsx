@@ -71,8 +71,6 @@ export const BusinessProvider = ({ children }) => {
                 const businessData = JSON.parse(businessStr);
                 setBusiness(businessData);
                 const type = extractBusinessType(businessData);
-                console.log('Business data:', businessData);
-                console.log('Extracted business type:', type);
                 setBusinessType(type);
                 setConfig(businessConfigs[type] || businessConfigs.retail);
             }

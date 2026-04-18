@@ -26,15 +26,19 @@ const createAdmin = async (req, res) => {
     });
 
     const saltRounds = 10;
-    const hash = bcrypt.hashSync(req.body.password, saltRounds);
+    const hash = await bcrypt.hash(req.body.password, saltRounds);
 
     admin.token = token;
     admin.password = hash;
 
     try {
         const savedUser = await admin.save();
-        res.status(201).json(savedUser);
+        const { password: _, token: __, otp: ___, otpExpiry: ____, ...safeUser } = savedUser.toObject();
+        res.status(201).json(safeUser);
     } catch (error) {
+        if (error.code === 11000) {
+            return res.status(409).json({ error: 'An account with this email already exists' });
+        }
         res.status(500).json({ error: 'Error creating User' });
     }
 };
@@ -56,7 +60,7 @@ const login = async (req, res) => {
             return res.status(401).json({ message: 'Invalid credentials' });
         }
 
-        const isAuthAdmin = bcrypt.compareSync(req.body.password, getAdmin.password);
+        const isAuthAdmin = await bcrypt.compare(req.body.password, getAdmin.password);
 
         if (isAuthAdmin) {
             let token = jwt.sign({
@@ -206,7 +210,7 @@ const resetPassword = async (req, res) => {
 
         // Hash the new password
         const saltRounds = 10;
-        const hash = bcrypt.hashSync(newPassword, saltRounds);
+        const hash = await bcrypt.hash(newPassword, saltRounds);
 
         // Update the admin's password and clear the OTP and expiry
         admin.password = hash;

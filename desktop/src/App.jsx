@@ -136,14 +136,16 @@ function AppContent() {
                     </PublicRoute>
                 }
             />
-            <Route
-                path="/signup"
-                element={
-                    <PublicRoute>
-                        <Signup />
-                    </PublicRoute>
-                }
-            />
+            {import.meta.env.VITE_ENV === 'development' && (
+                <Route
+                    path="/signup"
+                    element={
+                        <PublicRoute>
+                            <Signup />
+                        </PublicRoute>
+                    }
+                />
+            )}
             <Route
                 path="/"
                 element={

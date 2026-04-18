@@ -205,6 +205,7 @@ export const updateAccessSchema = Joi.object({
         expenses: permissionFields,
         customers: permissionFields,
         employees: permissionFields,
+        cashbook: permissionFields,
         dashboard: permissionFields,
         reports: permissionFields,
         settings: permissionFields,
@@ -349,6 +350,7 @@ const supplyItemSchema = Joi.object({
     product: objectId.required(),
     quantity: Joi.number().integer().positive().required(),
     unitPrice: Joi.number().min(0).required(),
+    total: Joi.number().min(0),
     gst: Joi.number().min(0).max(100),
     name: Joi.string(),
 });

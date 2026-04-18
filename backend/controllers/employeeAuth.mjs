@@ -31,7 +31,7 @@ export const employeeLogin = async (req, res) => {
             return res.status(401).json({ message: 'Account is not active' });
         }
 
-        const isValidPassword = bcrypt.compareSync(password, employee.password);
+        const isValidPassword = await bcrypt.compare(password, employee.password);
 
         if (!isValidPassword) {
             return res.status(401).json({ message: 'Invalid credentials' });
@@ -95,14 +95,14 @@ export const employeeChangePassword = async (req, res) => {
             return res.status(404).json({ message: 'Employee not found' });
         }
 
-        const isValidPassword = bcrypt.compareSync(currentPassword, employee.password);
+        const isValidPassword = await bcrypt.compare(currentPassword, employee.password);
 
         if (!isValidPassword) {
             return res.status(401).json({ message: 'Current password is incorrect' });
         }
 
         const saltRounds = 10;
-        employee.password = bcrypt.hashSync(newPassword, saltRounds);
+        employee.password = await bcrypt.hash(newPassword, saltRounds);
         employee.requirePasswordChange = false;
         await employee.save();
 

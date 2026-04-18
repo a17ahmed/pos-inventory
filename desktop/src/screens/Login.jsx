@@ -1,10 +1,9 @@
 import React, { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { FiMail, FiLock, FiEye, FiEyeOff, FiUser, FiUsers, FiUserPlus, FiServer, FiCheck } from 'react-icons/fi';
+import { FiMail, FiLock, FiEye, FiEyeOff, FiUser, FiUsers, FiUserPlus } from 'react-icons/fi';
 import { useAuth } from '../context/AuthContext';
 import { useBusiness } from '../context/BusinessContext';
 import { adminLogin, employeeLogin } from '../services/api/auth';
-import { setServerUrl, getServerUrl } from '../services/api';
 
 const Login = () => {
     const navigate = useNavigate();
@@ -21,17 +20,7 @@ const Login = () => {
     const [showPassword, setShowPassword] = useState(false);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
-    const [showServerConfig, setShowServerConfig] = useState(false);
-    const [serverInput, setServerInput] = useState(getServerUrl());
-    const [serverSaved, setServerSaved] = useState(false);
-
-    const handleSaveServer = () => {
-        if (serverInput.trim()) {
-            setServerUrl(serverInput.trim());
-            setServerSaved(true);
-            setTimeout(() => setServerSaved(false), 2000);
-        }
-    };
+    const isDev = import.meta.env.VITE_ENV === 'development';
 
     const handleAdminLogin = async () => {
         setError('');
@@ -107,16 +96,17 @@ const Login = () => {
                     localStorage.setItem('business', JSON.stringify(response.data.business));
                 }
 
-                // Check if password change required
-                if (response.data.requirePasswordChange) {
-                    // For now, just show alert - you can add change password screen later
-                    alert('Password change required. Please change your password.');
-                }
-
                 // Update auth and business contexts (checkAuth will also fetch permissions)
                 checkAuth();
                 loadBusiness();
-                navigate('/dashboard', { replace: true });
+
+                // Redirect to profile if password change required
+                if (response.data.requirePasswordChange) {
+                    alert('You must change your password before continuing.');
+                    navigate('/profile', { replace: true });
+                } else {
+                    navigate('/dashboard', { replace: true });
+                }
             }
         } catch (err) {
             console.error('Login error:', err);
@@ -283,58 +273,26 @@ const Login = () => {
                         </button>
                     </div>
 
-                    {/* Server Config */}
-                    <div className="mt-4 pt-4 border-t border-slate-200">
-                        <button
-                            type="button"
-                            onClick={() => setShowServerConfig(!showServerConfig)}
-                            className="w-full flex items-center justify-center gap-2 text-slate-400 hover:text-slate-600 text-xs transition-colors"
-                        >
-                            <FiServer size={12} />
-                            <span>Server Settings</span>
-                        </button>
-                        {showServerConfig && (
-                            <div className="mt-3 space-y-2">
-                                <label className="block text-xs font-medium text-slate-500">Server URL</label>
-                                <div className="flex gap-2">
-                                    <input
-                                        type="text"
-                                        value={serverInput}
-                                        onChange={(e) => setServerInput(e.target.value)}
-                                        placeholder="http://192.168.1.100:3000"
-                                        className="flex-1 px-3 py-2 text-sm border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 bg-white text-slate-800 placeholder-slate-400"
-                                    />
-                                    <button
-                                        type="button"
-                                        onClick={handleSaveServer}
-                                        className={`px-3 py-2 rounded-lg text-sm font-medium text-white transition-colors ${
-                                            serverSaved ? 'bg-green-500' : 'bg-indigo-500 hover:bg-indigo-600'
-                                        }`}
-                                    >
-                                        {serverSaved ? <FiCheck size={16} /> : 'Save'}
-                                    </button>
-                                </div>
-                                <p className="text-[10px] text-slate-400">Change this to connect to a server on your network</p>
-                            </div>
-                        )}
-                    </div>
-
-                    {/* Create Account */}
-                    <div className="mt-4 text-center">
-                        <Link
-                            to="/signup"
-                            className="inline-flex items-center gap-2 text-sm text-indigo-500 hover:text-indigo-700 font-medium transition-colors"
-                        >
-                            <FiUserPlus />
-                            Create Account
-                        </Link>
-                    </div>
+                    {/* Create Account — only in development */}
+                    {isDev && (
+                        <div className="mt-4 pt-4 border-t border-slate-200 text-center">
+                            <Link
+                                to="/signup"
+                                className="inline-flex items-center gap-2 text-sm text-indigo-500 hover:text-indigo-700 font-medium transition-colors"
+                            >
+                                <FiUserPlus />
+                                Create Account
+                            </Link>
+                        </div>
+                    )}
                 </div>
 
-                {/* Keyboard shortcut hint */}
-                <p className="text-center text-white/60 text-sm mt-6">
-                    Press <kbd className="px-2 py-1 bg-white/20 rounded">Ctrl+Shift+I</kbd> to open DevTools
-                </p>
+                {/* Keyboard shortcut hint — dev only */}
+                {isDev && (
+                    <p className="text-center text-white/60 text-sm mt-6">
+                        Press <kbd className="px-2 py-1 bg-white/20 rounded">Ctrl+Shift+I</kbd> to open DevTools
+                    </p>
+                )}
             </div>
         </div>
     );

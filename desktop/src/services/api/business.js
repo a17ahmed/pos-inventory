@@ -11,3 +11,9 @@ export const getBusinessById = (id) =>
 
 export const updateBusiness = (id, data) =>
     api.patch(`/business/${id}`, data);
+
+export const updateAdmin = (id, data) =>
+    api.patch(`/admin/${id}`, data);
+
+export const changeAdminPassword = (data) =>
+    api.post('/admin/change-password', data);

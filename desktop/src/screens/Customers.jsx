@@ -62,7 +62,7 @@ const Customers = () => {
     const [submitting, setSubmitting] = useState(false);
 
     const formatCurrency = (amount) =>
-        `${business?.currency || 'PKR'} ${(amount || 0).toLocaleString()}`;
+        `${business?.currency || 'Rs.'} ${(amount || 0).toLocaleString()}`;
 
     // =========================================================================
     // Data fetching

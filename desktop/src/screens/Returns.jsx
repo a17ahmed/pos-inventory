@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useBusiness } from '../context/BusinessContext';
 import { getTodaySummary, getReturnByReceipt, getReturnProductByBarcode, createReturn } from '../services/api/returns';
+import { getProducts } from '../services/api/products';
 import { searchCustomers, getCustomer } from '../services/api/customers';
 import {
     FiSearch,
@@ -38,7 +39,11 @@ const Returns = () => {
     // Return items state
     const [returnItems, setReturnItems] = useState([]);
     const [barcode, setBarcode] = useState('');
+    const [allProducts, setAllProducts] = useState([]);
+    const [productSuggestions, setProductSuggestions] = useState([]);
+    const [showProductDropdown, setShowProductDropdown] = useState(false);
     const barcodeInputRef = useRef(null);
+    const productDropdownRef = useRef(null);
 
     // Bill lookup
     const [billNumber, setBillNumber] = useState('');
@@ -71,10 +76,64 @@ const Returns = () => {
 
     useEffect(() => {
         loadTodaySummary();
+        getProducts().then(res => setAllProducts(res.data || [])).catch(() => {});
         if (barcodeInputRef.current) {
             barcodeInputRef.current.focus();
         }
     }, []);
+
+    // Close product dropdown on outside click
+    useEffect(() => {
+        const handleClickOutside = (e) => {
+            if (productDropdownRef.current && !productDropdownRef.current.contains(e.target)) {
+                setShowProductDropdown(false);
+            }
+        };
+        document.addEventListener('mousedown', handleClickOutside);
+        return () => document.removeEventListener('mousedown', handleClickOutside);
+    }, []);
+
+    // Filter products as user types
+    const handleSearchChange = (value) => {
+        setBarcode(value);
+        if (value.trim().length >= 2) {
+            const q = value.toLowerCase();
+            const matches = allProducts.filter(p =>
+                p.name?.toLowerCase().includes(q) || p.barcode?.toLowerCase().includes(q)
+            ).slice(0, 8);
+            setProductSuggestions(matches);
+            setShowProductDropdown(matches.length > 0);
+        } else {
+            setProductSuggestions([]);
+            setShowProductDropdown(false);
+        }
+    };
+
+    const addProductFromSuggestion = (product) => {
+        const existingIndex = returnItems.findIndex(ri => ri.product === product._id);
+        if (existingIndex >= 0) {
+            const updated = [...returnItems];
+            updated[existingIndex] = { ...updated[existingIndex], quantity: updated[existingIndex].quantity + 1 };
+            setReturnItems(updated);
+        } else {
+            setReturnItems([...returnItems, {
+                id: Date.now().toString(),
+                product: product._id,
+                productName: product.name,
+                name: product.name,
+                barcode: product.barcode || '',
+                price: product.sellingPrice || product.price || 0,
+                quantity: 1,
+                reason: 'changed_mind',
+                fromBill: false,
+            }]);
+        }
+        setBarcode('');
+        setShowProductDropdown(false);
+        setProductSuggestions([]);
+        setError('');
+        if (barcodeInputRef.current) barcodeInputRef.current.focus();
+    };
 
     const loadTodaySummary = async () => {
         try {
@@ -596,18 +655,37 @@ const Returns = () => {
                         <div className="bg-white dark:bg-d-card rounded-2xl border border-slate-200 dark:border-d-border p-6">
                             <h3 className="text-lg font-semibold text-slate-800 dark:text-d-heading mb-4 flex items-center gap-2">
                                 <FiPackage className="text-d-accent" />
-                                Scan/Enter Product Barcode
+                                Search Product
                             </h3>
                             <form onSubmit={handleBarcodeSubmit} className="flex gap-3">
-                                <div className="relative flex-1">
+                                <div className="relative flex-1" ref={productDropdownRef}>
+                                    <FiSearch className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 dark:text-d-faint" size={16} />
                                     <input
                                         ref={barcodeInputRef}
                                         type="text"
                                         value={barcode}
-                                        onChange={(e) => setBarcode(e.target.value)}
-                                        placeholder="Scan or enter barcode..."
-                                        className="w-full px-4 py-3 bg-slate-50 dark:bg-d-bg border border-slate-200 dark:border-d-border rounded-xl text-slate-700 dark:text-d-text placeholder-d-faint font-mono focus:outline-none focus:border-d-border-hover"
+                                        onChange={(e) => handleSearchChange(e.target.value)}
+                                        placeholder="Search by name or barcode..."
+                                        className="w-full pl-11 pr-4 py-3 bg-slate-50 dark:bg-d-bg border border-slate-200 dark:border-d-border rounded-xl text-slate-700 dark:text-d-text placeholder-slate-400 dark:placeholder-d-faint focus:outline-none focus:border-d-border-hover focus:ring-2 focus:ring-[rgba(255,210,100,0.3)]"
                                     />
+                                    {showProductDropdown && (
+                                        <div className="absolute top-full left-0 right-0 mt-1 bg-white dark:bg-d-elevated border border-slate-200 dark:border-d-border rounded-xl shadow-xl z-50 max-h-60 overflow-auto">
+                                            {productSuggestions.map((p) => (
+                                                <button
+                                                    key={p._id}
+                                                    type="button"
+                                                    onClick={() => addProductFromSuggestion(p)}
+                                                    className="w-full text-left px-4 py-3 hover:bg-slate-50 dark:hover:bg-d-glass transition-colors flex items-center justify-between border-b border-slate-100 dark:border-d-border last:border-b-0"
+                                                >
+                                                    <div>
+                                                        <p className="font-medium text-slate-800 dark:text-d-heading text-sm">{p.name}</p>
+                                                        {p.barcode && <p className="text-xs text-slate-400 dark:text-d-faint font-mono">{p.barcode}</p>}
+                                                    </div>
+                                                    <span className="text-sm text-slate-500 dark:text-d-muted">{business?.currency || 'Rs.'} {(p.sellingPrice || 0).toLocaleString()}</span>
+                                                </button>
+                                            ))}
+                                        </div>
+                                    )}
                                 </div>
                                 <button
                                     type="submit"

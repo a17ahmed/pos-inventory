@@ -1,5 +1,9 @@
 import 'dotenv/config';
 
+// Set process timezone from env (defaults to Asia/Karachi for PKT)
+// This ensures new Date().setHours(0,0,0,0) = local midnight, not UTC midnight
+process.env.TZ = process.env.TIMEZONE || 'Asia/Karachi';
+
 import jwt from 'jsonwebtoken';
 
 import express, { json } from 'express';
@@ -212,6 +216,17 @@ app.use(helmet({
     crossOriginEmbedderPolicy: false,
 }));
 
+// Request logger (testing only — remove before production)
+app.use((req, res, next) => {
+    const start = Date.now();
+    const body = req.method !== 'GET' && req.body ? JSON.stringify(req.body, null, 2) : null;
+    res.on('finish', () => {
+        console.log(`\n[${req.method}] ${req.originalUrl} → ${res.statusCode} (${Date.now() - start}ms)`);
+        if (body) console.log('Body:', body);
+    });
+    next();
+});
+
 // Health check endpoint
 app.get('/health', (req, res) => {
     const dbStatus = mongoose.connection.readyState === 1 ? 'connected' : 'disconnected';
@@ -228,7 +243,7 @@ app.use("/adminAuth", authLimiter, adminAuthRouter);
 app.use("/employeeAuth", authLimiter, employeeAuthRouter);
 app.use("/auth", authLimiter, authRouter);
 
-// Public routes (no auth required)
+// Public routes (no auth required - GET only)
 app.use("/business-types", businessTypeRouter);
 app.use("/business", businessRouter);
 
@@ -249,6 +264,15 @@ app.use("/cashbook", jwtAuth, accessControl, cashbookRouter);
 
 // Access control management (admin only, no accessControl middleware needed - uses RBAC)
 app.use("/access", jwtAuth, accessRouter);
+
+// Global error handler (catches malformed JSON, etc.)
+app.use((err, req, res, next) => {
+    if (err.type === 'entity.parse.failed') {
+        return res.status(400).json({ message: 'Invalid JSON in request body' });
+    }
+    console.error('Unhandled error:', err.message);
+    res.status(500).json({ message: 'Internal server error' });
+});
 
 // Import Employee model for socket auth
 import Employee from './models/employee.mjs';
@@ -306,9 +330,9 @@ io.on('connection', (socket) => {
         socket.join(`business:${businessId}:${role}`);
     }
 
-    // Handle manual role room join (in case role changes)
+    // Handle manual role room join — only allow user's actual role
     socket.on('join:role', ({ role: newRole }) => {
-        if (newRole) {
+        if (newRole && newRole === role) {
             socket.join(`business:${businessId}:${newRole}`);
         }
     });
@@ -321,6 +345,16 @@ io.on('connection', (socket) => {
 
 // Export io for use in controllers
 export { io };
+
+// Graceful error handling
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+process.on('uncaughtException', (error) => {
+    console.error('Uncaught Exception:', error);
+    process.exit(1);
+});
 
 server.listen(port, '0.0.0.0', () => {
     console.log(`Inventory Server is Running at 0.0.0.0:${port}`);

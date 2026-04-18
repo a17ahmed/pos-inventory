@@ -3,6 +3,7 @@ import Bill from '../models/bill.mjs';
 import Counter from '../models/counter.mjs';
 import mongoose from 'mongoose';
 import { recordCashEntry } from './cashbook.mjs';
+import { startOfDay, endOfDay, toLocalDateString, toLocalTimeString } from '../utils/dateHelpers.mjs';
 
 // Create or get customer (upsert by phone + business)
 export const createOrGetCustomer = async (req, res) => {
@@ -59,8 +60,8 @@ export const createOrGetCustomer = async (req, res) => {
                     customerPhone: customer.phone,
                     cashierName: 'System',
                     notes: 'Opening balance from previous system',
-                    date: now.toLocaleDateString('en-US'),
-                    time: now.toLocaleTimeString('en-US'),
+                    date: toLocalDateString(now),
+                    time: toLocalTimeString(now),
                 });
                 await ob.save({ session });
 
@@ -246,8 +247,8 @@ export const getCustomerLedger = async (req, res) => {
 
         if (startDate || endDate) {
             billFilter.createdAt = {};
-            if (startDate) billFilter.createdAt.$gte = new Date(startDate);
-            if (endDate) billFilter.createdAt.$lte = new Date(endDate);
+            if (startDate) billFilter.createdAt.$gte = startOfDay(startDate);
+            if (endDate) billFilter.createdAt.$lte = endOfDay(endDate);
         }
 
         const bills = await Bill.find(billFilter)

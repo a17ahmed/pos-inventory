@@ -57,7 +57,7 @@ const CashBook = () => {
     const [modalForm, setModalForm] = useState({ amount: '', note: '', description: '' });
     const [submitting, setSubmitting] = useState(false);
 
-    const currency = business?.currency || 'PKR';
+    const currency = business?.currency || 'Rs.';
     const formatCurrency = (amt) =>
         `${currency} ${Math.abs(amt || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
 

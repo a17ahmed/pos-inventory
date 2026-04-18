@@ -7,7 +7,7 @@ export const connectSocket = (serverUrl) => {
         return socket;
     }
 
-    const baseUrl = serverUrl || localStorage.getItem('api_base_url') || 'http://192.168.100.26:3000';
+    const baseUrl = serverUrl || import.meta.env.VITE_API_URL || 'http://localhost:3000';
 
     socket = io(baseUrl, {
         transports: ['websocket', 'polling'],

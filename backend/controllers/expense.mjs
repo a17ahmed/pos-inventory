@@ -1,7 +1,9 @@
 import mongoose from 'mongoose';
 import Expense from '../models/expense.mjs';
 import Counter from '../models/counter.mjs';
+import CashBook from '../models/cashbook.mjs';
 import { recordCashEntry } from './cashbook.mjs';
+import { startOfDay, endOfDay } from '../utils/dateHelpers.mjs';
 
 // Category labels for display
 const CATEGORY_LABELS = {
@@ -93,12 +95,10 @@ const getAllExpenses = async (req, res) => {
         if (startDate || endDate) {
             filter.date = {};
             if (startDate) {
-                filter.date.$gte = new Date(startDate);
+                filter.date.$gte = startOfDay(startDate);
             }
             if (endDate) {
-                const end = new Date(endDate);
-                end.setHours(23, 59, 59, 999);
-                filter.date.$lte = end;
+                filter.date.$lte = endOfDay(endDate);
             }
         }
 
@@ -188,7 +188,7 @@ const updateExpense = async (req, res) => {
 // DELETE - Delete expense (admin only)
 const deleteExpense = async (req, res) => {
     try {
-        const expense = await Expense.findOneAndDelete({
+        const expense = await Expense.findOne({
             _id: req.params.id,
             business: req.user.businessId
         });
@@ -196,6 +196,25 @@ const deleteExpense = async (req, res) => {
         if (!expense) {
             return res.status(404).json({ error: 'Expense not found' });
         }
+
+        // If approved cash expense, reverse the cashbook entry
+        if (expense.status === 'approved' && expense.paymentMethod === 'cash') {
+            await recordCashEntry({
+                type: 'expense_reversal',
+                amount: expense.amount,
+                direction: 'in',
+                referenceType: 'expense',
+                referenceId: expense._id,
+                referenceNumber: `Expense #${expense.expenseNumber || expense._id}`,
+                description: `Reversed: ${expense.category}${expense.description ? ' - ' + expense.description : ''}`,
+                note: 'Expense deleted',
+                performedBy: req.user.name || 'Admin',
+                performedById: req.user.id || req.user.adminId,
+                businessId: req.user.businessId,
+            });
+        }
+
+        await Expense.deleteOne({ _id: expense._id });
 
         res.json({ message: 'Expense deleted', expense });
     } catch (error) {
@@ -228,28 +247,40 @@ const approveExpense = async (req, res) => {
         expense.approvedAt = new Date();
         expense.rejectionReason = '';
 
-        const updatedExpense = await expense.save();
-
-        // Record in cashbook for cash expenses
+        // Use transaction for cash expenses (expense + cashbook must be atomic)
         if (expense.paymentMethod === 'cash') {
-            await recordCashEntry({
-                type: 'expense',
-                amount: expense.amount,
-                direction: 'out',
-                referenceType: 'expense',
-                referenceId: expense._id,
-                referenceNumber: `Expense #${expense.expenseNumber || expense._id}`,
-                description: `Expense: ${expense.category}${expense.description ? ' - ' + expense.description : ''}`,
-                note: expense.description || '',
-                performedBy: req.user.name || 'Admin',
-                performedById: req.user.id || req.user.adminId,
-                businessId: req.user.businessId,
-            });
+            const session = await mongoose.startSession();
+            try {
+                session.startTransaction();
+                await expense.save({ session });
+                await recordCashEntry({
+                    type: 'expense',
+                    amount: expense.amount,
+                    direction: 'out',
+                    referenceType: 'expense',
+                    referenceId: expense._id,
+                    referenceNumber: `Expense #${expense.expenseNumber || expense._id}`,
+                    description: `Expense: ${expense.category}${expense.description ? ' - ' + expense.description : ''}`,
+                    note: expense.description || '',
+                    performedBy: req.user.name || 'Admin',
+                    performedById: req.user.id || req.user.adminId,
+                    businessId: req.user.businessId,
+                    session,
+                });
+                await session.commitTransaction();
+            } catch (txError) {
+                await session.abortTransaction();
+                throw txError;
+            } finally {
+                session.endSession();
+            }
+        } else {
+            await expense.save();
         }
 
         res.json({
             message: 'Expense approved',
-            expense: updatedExpense
+            expense
         });
     } catch (error) {
         console.error('Error approving expense:', error);
@@ -308,12 +339,10 @@ const getExpenseStats = async (req, res) => {
         // Build date filter
         const dateFilter = {};
         if (startDate) {
-            dateFilter.$gte = new Date(startDate);
+            dateFilter.$gte = startOfDay(startDate);
         }
         if (endDate) {
-            const end = new Date(endDate);
-            end.setHours(23, 59, 59, 999);
-            dateFilter.$lte = end;
+            dateFilter.$lte = endOfDay(endDate);
         }
 
         // Get today and month start for period stats

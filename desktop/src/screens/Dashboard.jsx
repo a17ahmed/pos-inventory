@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { toLocalDateStr } from '../utils/date';
 import { useNavigate } from 'react-router-dom';
 import { useBusiness } from '../context/BusinessContext';
 import { useAuth } from '../context/AuthContext';
@@ -10,6 +11,7 @@ import { getSupplyStats } from '../services/api/supplies';
 import { searchCustomers } from '../services/api/customers';
 import { getExpenses as getApprovedExpenses } from '../services/api/expenses';
 import { getCashBalance } from '../services/api/cashbook';
+import { printReceipt as printReceiptUtil } from '../utils/printReceipt';
 import {
     FiTrendingUp,
     FiShoppingCart,
@@ -689,8 +691,8 @@ const EmployeeDashboard = () => {
             setPaymentMethod('cash');
             setShowSuccess(true);
 
-            // Auto-print receipt
-            printReceipt(sData, sData.bill);
+            // Auto-print receipt (only in Electron — browser shows print dialog which is disruptive)
+            if (window.electronAPI?.printReceipt) printReceipt(sData, sData.bill);
 
             loadData();
         } catch (error) {
@@ -708,148 +710,30 @@ const EmployeeDashboard = () => {
 
     const printReceipt = (billData, bill) => {
         const totals = getBillTotal(bill);
-        const storeName = business?.name || 'Store';
-        const storePhone = business?.phone || '';
-        const addr = business?.address;
-        const storeAddress = addr
-            ? [addr.street, addr.city, addr.state, addr.zipCode, addr.country].filter(Boolean).join(', ')
-            : '';
-        const currency = business?.currency || 'Rs.';
-        const cashierName = user?.name || '';
-        const billNo = billData.billNumber || '-';
-        const date = new Date().toLocaleString('en-PK', { dateStyle: 'medium', timeStyle: 'short' });
-        const customerName = bill.customerName || 'Walk-in';
-
-        const itemRows = bill.items.map(item => {
-            const lineTotal = item.price * item.qty - (Number(item.discountAmount) || 0);
-            return `<tr>
-                    <td style="text-align:left;padding:1px 0;font-size:11px;">${item.name}</td>
-                    <td style="text-align:center;font-size:11px;">${item.qty}</td>
-                    <td style="text-align:right;font-size:11px;">${item.price.toLocaleString()}</td>
-                    <td style="text-align:right;font-size:11px;">${lineTotal.toLocaleString()}</td>
-                </tr>`;
-        }).join('');
-
-        const receiptHTML = `<html>
-        <head>
-            <title>Receipt</title>
-            <style>
-                @page {
-                    margin: 0;
-                    size: 72mm auto;
-                }
-                * { margin: 0; padding: 0; box-sizing: border-box; }
-                html, body { width: 72mm; margin: 0; padding: 0; }
-                body { font-family: 'Courier New', monospace; padding: 4mm 2mm; font-size: 11px; color: #000; }
-                .center { text-align: center; }
-                .line { border-top: 1px dashed #000; margin: 4px 0; }
-                .store-name { font-size: 14px; font-weight: bold; }
-                table { width: 100%; border-collapse: collapse; }
-                th { text-align: left; font-size: 9px; border-bottom: 1px solid #000; padding: 1px 0; }
-                .total-row td { font-weight: bold; font-size: 12px; padding-top: 3px; }
-            </style>
-        </head>
-        <body>
-            <div class="center">
-                <div class="store-name">${storeName}</div>
-                ${storeAddress ? `<div style="font-size:9px;margin-top:1px;">${storeAddress}</div>` : ''}
-                ${storePhone ? `<div style="font-size:9px;">Tel: ${storePhone}</div>` : ''}
-            </div>
-            <div class="line"></div>
-            <div style="display:flex;justify-content:space-between;font-size:9px;">
-                <span>Bill# ${billNo}</span>
-                <span>${date}</span>
-            </div>
-            <div style="font-size:9px;">Customer: ${customerName}</div>
-            <div class="line"></div>
-            <table>
-                <thead>
-                    <tr>
-                        <th style="text-align:left;">Item</th>
-                        <th style="text-align:center;">Qty</th>
-                        <th style="text-align:right;">Price</th>
-                        <th style="text-align:right;">Total</th>
-                    </tr>
-                </thead>
-                <tbody>${itemRows}</tbody>
-            </table>
-            <div class="line"></div>
-            <table>
-                <tr>
-                    <td style="font-size:10px;">Subtotal</td>
-                    <td style="text-align:right;font-size:10px;">${currency} ${totals.subtotal.toLocaleString()}</td>
-                </tr>
-                ${totals.tax > 0 ? `<tr><td style="font-size:10px;">Tax</td><td style="text-align:right;font-size:10px;">${currency} ${totals.tax.toLocaleString()}</td></tr>` : ''}
-                ${totals.itemDiscounts > 0 ? `<tr><td style="font-size:10px;">Discount</td><td style="text-align:right;font-size:10px;">-${currency} ${totals.itemDiscounts.toLocaleString()}</td></tr>` : ''}
-                ${totals.billDiscount > 0 ? `<tr><td style="font-size:10px;">Bill Disc.</td><td style="text-align:right;font-size:10px;">-${currency} ${totals.billDiscount.toLocaleString()}</td></tr>` : ''}
-                <tr class="total-row">
-                    <td style="border-top:1px solid #000;padding-top:3px;">TOTAL</td>
-                    <td style="text-align:right;border-top:1px solid #000;padding-top:3px;">${currency} ${totals.total.toLocaleString()}</td>
-                </tr>
-                ${billData.paymentMethod === 'cash' && billData.cashGiven > 0 ? `
-                    <tr><td style="font-size:10px;">Cash</td><td style="text-align:right;font-size:10px;">${currency} ${billData.cashGiven.toLocaleString()}</td></tr>
-                    <tr><td style="font-size:10px;font-weight:bold;">Change</td><td style="text-align:right;font-size:10px;font-weight:bold;">${currency} ${billData.change.toLocaleString()}</td></tr>
-                ` : ''}
-            </table>
-            <div class="line"></div>
-            <div class="center" style="font-size:9px;">Payment: ${billData.paymentMethod.toUpperCase()}</div>
-            <div class="line"></div>
-            ${business?.receiptNote ? `<div class="center" style="font-size:8px;margin-top:2px;font-style:italic;">${business.receiptNote}</div><div class="line"></div>` : ''}
-            <div class="center" style="font-size:9px;margin-top:2px;">${business?.receiptFooter || 'Thank you for your purchase!'}</div>
-        </body>
-        </html>`;
-
-        // Electron app — send structured data for direct ESC/POS printing
-        if (window.electronAPI?.printReceipt) {
-            window.electronAPI.printReceipt({
-                receiptData: {
-                    storeName, storeAddress, storePhone, cashierName,
-                    billNumber: billNo, date, customerName,
-                    customerBalance: bill.customerBalance || 0,
-                    items: bill.items.map(item => ({
-                        name: item.name,
-                        qty: item.qty,
-                        rate: item.price,
-                        amount: item.price * item.qty,
-                        discountAmount: item.discountAmount || 0,
-                    })),
-                    subtotal: totals.subtotal,
-                    tax: totals.tax,
-                    itemDiscounts: totals.itemDiscounts,
-                    billDiscount: totals.billDiscount,
-                    total: totals.total,
-                    paymentMethod: billData.paymentMethod,
-                    amountPaid: billData.amountPaid ?? 0,
-                    cashGiven: billData.cashGiven || 0,
-                    change: billData.change || 0,
-                    currency,
-                    receiptFooter: business?.receiptFooter || 'Thank you for your purchase!',
-                    receiptNote: business?.receiptNote || '',
-                },
-            })
-                .then(result => {
-                    if (!result.success) console.error('Print failed:', result.error);
-                })
-                .catch(err => console.error('Print error:', err));
-            return;
-        }
-
-        // Browser fallback — hidden iframe
-        let printFrame = document.getElementById('receipt-print-frame');
-        if (!printFrame) {
-            printFrame = document.createElement('iframe');
-            printFrame.id = 'receipt-print-frame';
-            printFrame.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:0;height:0;border:none;';
-            document.body.appendChild(printFrame);
-        }
-        const frameDoc = printFrame.contentDocument || printFrame.contentWindow.document;
-        frameDoc.open();
-        frameDoc.write(receiptHTML);
-        frameDoc.close();
-        setTimeout(() => {
-            printFrame.contentWindow.focus();
-            printFrame.contentWindow.print();
-        }, 300);
+        printReceiptUtil({
+            store: business,
+            currency: business?.currency || 'Rs.',
+            billNumber: billData.billNumber || '-',
+            date: new Date().toLocaleString('en-PK', { dateStyle: 'medium', timeStyle: 'short' }),
+            customerName: bill.customerName || 'Walk-in',
+            cashierName: user?.name || '',
+            customerBalance: bill.customerBalance || 0,
+            items: bill.items.map(item => ({
+                name: item.name,
+                qty: item.qty,
+                price: item.price,
+                discountAmount: item.discountAmount || 0,
+            })),
+            subtotal: totals.subtotal,
+            tax: totals.tax,
+            itemDiscounts: totals.itemDiscounts,
+            billDiscount: totals.billDiscount,
+            total: totals.total,
+            paymentMethod: billData.paymentMethod,
+            amountPaid: billData.amountPaid ?? 0,
+            cashGiven: billData.cashGiven || 0,
+            change: billData.change || 0,
+        });
     };
 
     const activeBill = bills.find(b => b.id === activeBillId);
@@ -1744,7 +1628,7 @@ const AdminDashboard = () => {
     const { business } = useBusiness();
     const [timeFilter, setTimeFilter] = useState('today');
     const [stats, setStats] = useState({ totalSales: 0, totalOrders: 0, avgOrderValue: 0, growth: 0 });
-    const [profitLoss, setProfitLoss] = useState({ grossRevenue: 0, returns: 0, netRevenue: 0, cogs: 0, grossProfit: 0, returnedProfit: 0, salesNetProfit: 0, expenses: 0, netProfit: 0, profitMargin: 0 });
+    const [profitLoss, setProfitLoss] = useState({ grossRevenue: 0, returns: 0, netRevenue: 0, cogs: 0, grossProfit: 0, expenses: 0, netProfit: 0, profitMargin: 0 });
     const [chartData, setChartData] = useState([]);
     const [peakData, setPeakData] = useState({ value: 0, time: '' });
     const [loading, setLoading] = useState(true);
@@ -1808,9 +1692,12 @@ const AdminDashboard = () => {
             const periodExpenses = allExpenses.filter(e => new Date(e.date || e.createdAt) >= startDate);
             const expenses = periodExpenses.reduce((sum, e) => sum + (e.amount || 0), 0);
 
-            const returnedProfit = (backendStats.grossProfit || 0) - (backendStats.netProfit || 0);
-            const netProfit = backendStats.netProfit - expenses;
-            const profitMargin = backendStats.netRevenue > 0 ? (netProfit / backendStats.netRevenue) * 100 : 0;
+            const returns = backendStats.totalRefunded || 0;
+            const cogs = backendStats.adjustedCogs ?? backendStats.totalCost ?? 0;
+            const netRevenue = backendStats.netRevenue || 0;
+            const grossProfit = netRevenue - cogs;
+            const netProfit = grossProfit - expenses;
+            const profitMargin = netRevenue > 0 ? (netProfit / netRevenue) * 100 : 0;
 
             setStats({
                 totalSales: backendStats.grossRevenue,
@@ -1821,12 +1708,10 @@ const AdminDashboard = () => {
 
             setProfitLoss({
                 grossRevenue: backendStats.grossRevenue,
-                returns: backendStats.totalRefunded || 0,
-                netRevenue: backendStats.netRevenue,
-                cogs: backendStats.totalCost || 0,
-                grossProfit: backendStats.grossProfit,
-                returnedProfit,
-                salesNetProfit: backendStats.netProfit,
+                returns,
+                netRevenue: netRevenue,
+                cogs,
+                grossProfit,
                 expenses,
                 netProfit,
                 profitMargin
@@ -1891,7 +1776,7 @@ const AdminDashboard = () => {
             for (let i = 0; i < 7; i++) {
                 const day = new Date(startDate);
                 day.setDate(startDate.getDate() + i);
-                const key = day.toISOString().split('T')[0];
+                const key = toLocalDateStr(day);
                 const dayName = day.toLocaleDateString('en', { weekday: 'short' });
                 const sales = dataMap[key]?.revenue || 0;
                 const orders = dataMap[key]?.orders || 0;
@@ -1958,14 +1843,14 @@ const AdminDashboard = () => {
             title: 'Net Profit Calculation',
             items: [
                 { label: 'Gross Revenue', value: profitLoss.grossRevenue, color: '#34e8a1', sign: '' },
+                { label: 'Returns/Refunds', value: profitLoss.returns, color: '#ff6b6b', sign: '\u2212' },
+                { label: 'Net Revenue', value: profitLoss.netRevenue, color: '#5b9cf6', sign: '=' },
                 { label: 'Cost of Goods', value: profitLoss.cogs, color: '#ff6b6b', sign: '\u2212' },
                 { label: 'Gross Profit', value: profitLoss.grossProfit, color: '#ffd264', sign: '=' },
-                { label: 'Returned Profit', value: profitLoss.returnedProfit, color: '#ff6b6b', sign: '\u2212' },
-                { label: 'Net Sales Profit', value: profitLoss.salesNetProfit, color: '#5b9cf6', sign: '=' },
                 { label: 'Expenses', value: profitLoss.expenses, color: '#ff6b6b', sign: '\u2212' },
                 { label: 'Net Profit', value: profitLoss.netProfit, color: profitLoss.netProfit >= 0 ? '#34e8a1' : '#ff6b6b', sign: '=', isBold: true },
             ],
-            formula: 'Gross Profit \u2212 Returned Profit \u2212 Expenses = Net Profit'
+            formula: 'Revenue \u2212 Returns \u2212 COGS \u2212 Expenses = Net Profit'
         },
         cogs: {
             title: 'Cost of Goods Sold',

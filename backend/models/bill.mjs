@@ -218,11 +218,12 @@ billSchema.pre("save", function (next) {
         this.totalDiscount = 0;
         this.totalItemDiscount = 0;
         this.billDiscountAmount = 0;
-        this.totalCost = 0;
-        this.billProfit = 0;
+        // Store actual cost of refunded items for profit reporting
+        this.totalCost = this.items.reduce((sum, i) => sum + (i.costPrice * i.qty), 0);
+        this.billProfit = Math.abs(this.total) - this.totalCost; // profit lost on this refund
         this.returnedProfit = 0;
         this.netProfit = 0;
-        this.totalRefunded = 0;
+        this.totalRefunded = Math.abs(this.total);
         this.netAmount = this.total;
         this.amountPaid = this.payments.reduce((sum, p) => sum + p.amount, 0);
         this.amountDue = 0;

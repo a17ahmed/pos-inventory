@@ -7,8 +7,8 @@ import bcrypt from 'bcrypt';
 const getBusinessPrefix = async (businessId) => {
     const business = await Business.findById(businessId);
     if (business?.name) {
-        // Remove spaces, lowercase, take first 10 chars max
-        return business.name.toLowerCase().replace(/\s+/g, '').substring(0, 10);
+        // Remove spaces, lowercase, take first 20 chars max
+        return business.name.toLowerCase().replace(/\s+/g, '').substring(0, 20);
     }
     return 'emp';
 };
@@ -126,6 +126,15 @@ export const createEmployee = async (req, res) => {
             return res.status(400).json({ message: 'Password must be at least 4 characters' });
         }
 
+        // Check for duplicate employee name within the same business
+        const existingName = await Employee.findOne({
+            name: { $regex: new RegExp(`^${name.trim()}$`, 'i') },
+            business: req.user.businessId
+        });
+        if (existingName) {
+            return res.status(400).json({ message: `An employee named "${name.trim()}" already exists` });
+        }
+
         // Get or generate employee ID
         let employeeId;
         if (providedEmployeeId) {
@@ -147,7 +156,7 @@ export const createEmployee = async (req, res) => {
 
         // Hash password
         const saltRounds = 10;
-        const hashedPassword = bcrypt.hashSync(password, saltRounds);
+        const hashedPassword = await bcrypt.hash(password, saltRounds);
 
         const employee = new Employee({
             name,
@@ -230,7 +239,7 @@ export const resetEmployeePassword = async (req, res) => {
         }
 
         const saltRounds = 10;
-        employee.password = bcrypt.hashSync(newPassword, saltRounds);
+        employee.password = await bcrypt.hash(newPassword, saltRounds);
         employee.requirePasswordChange = requirePasswordChange !== false;
         await employee.save();
 

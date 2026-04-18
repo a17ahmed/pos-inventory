@@ -23,7 +23,7 @@ export const lookupBillsByProduct = (productId, days = 60) =>
 export const processReturn = (billId, data) =>
     api.post(`/bill/${billId}/return`, data);
 
-// Standalone (receiptless) refund — admin only, creates an unlinked refund bill
+// Standalone (receiptless) refund — requires returns.create permission
 export const createStandaloneRefund = (data) =>
     api.post('/bill/returns/standalone', data);
 

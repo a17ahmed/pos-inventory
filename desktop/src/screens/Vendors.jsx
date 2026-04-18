@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { todayLocalDate, toLocalDateStr } from '../utils/date';
 import { useNavigate } from 'react-router-dom';
 import { useBusiness } from '../context/BusinessContext';
 import { getVendors, createVendor, updateVendor, deleteVendor } from '../services/api/vendors';
@@ -30,7 +31,7 @@ import {
 // Helpers
 // ---------------------------------------------------------------------------
 
-const TODAY = new Date().toISOString().split('T')[0];
+const TODAY = todayLocalDate();
 
 const defaultSupplyForm = () => ({
     vendor: '',
@@ -109,7 +110,7 @@ const Vendors = () => {
 
     // ── Currency formatter ───────────────────────────────────────────────────
     const formatCurrency = (amount) =>
-        `${business?.currency || 'PKR'} ${(amount || 0).toLocaleString()}`;
+        `${business?.currency || 'Rs.'} ${(amount || 0).toLocaleString()}`;
 
     // =========================================================================
     // Data fetching
@@ -226,7 +227,7 @@ const Vendors = () => {
                 vendor: supply.vendor?._id || supply.vendor || '',
                 billNumber: supply.billNumber || '',
                 billDate: supply.billDate
-                    ? new Date(supply.billDate).toISOString().split('T')[0]
+                    ? toLocalDateStr(supply.billDate)
                     : TODAY,
                 paidAmount: supply.paidAmount ?? '',
                 notes: supply.notes || '',
@@ -301,6 +302,13 @@ const Vendors = () => {
         const missingProduct = supplyItems.some((i) => !i.product);
         if (missingProduct) {
             alert('Please select a product for every supply item.');
+            return;
+        }
+
+        // Validate: paid amount cannot exceed total
+        const paid = Number(supplyForm.paidAmount) || 0;
+        if (paid > itemsTotal) {
+            alert(`Paid amount (${paid}) cannot exceed items total (${itemsTotal}).`);
             return;
         }
 
@@ -1140,7 +1148,9 @@ const Vendors = () => {
                                                     className="appearance-none w-full px-3 py-2 pr-9 bg-white dark:bg-d-bg border border-slate-200 dark:border-d-border rounded-xl text-sm focus:ring-2 focus:ring-primary-500 dark:focus:border-d-border-hover focus:outline-none text-slate-800 dark:text-d-text"
                                                 >
                                                     <option value="">Select product…</option>
-                                                    {products.map((p) => (
+                                                    {products
+                                                        .filter((p) => p._id === item.product || !supplyItems.some((si, si_idx) => si_idx !== idx && si.product === p._id))
+                                                        .map((p) => (
                                                         <option key={p._id} value={p._id}>
                                                             {p.name}
                                                             {p.trackStock ? ` (stock: ${p.stockQuantity ?? 0})` : ''}
